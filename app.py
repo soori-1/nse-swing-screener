@@ -4,183 +4,111 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-import time
+from datetime import datetime
 
-# ─────────────────────────────────────────────────────────────
-# PAGE CONFIG
-# ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="NSE Swing Breakout Screener",
-    page_icon="📈",
+    page_title="NSE Breakout Watch",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ─────────────────────────────────────────────────────────────
-# CUSTOM CSS
-# ─────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Sora:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=DM+Sans:wght@400;500;600;700&display=swap');
 
-    html, body, [class*="css"] {
-        font-family: 'Sora', sans-serif;
-    }
-    .stApp {
-        background: #070d1a;
-    }
-    .main-header {
-        background: linear-gradient(135deg, #0f172a 0%, #1a2744 100%);
-        border: 1px solid #1e3a5f;
-        border-radius: 16px;
-        padding: 28px 36px;
-        margin-bottom: 24px;
-        position: relative;
-        overflow: hidden;
-    }
-    .main-header::before {
-        content: '';
-        position: absolute;
-        top: -50%;
-        right: -10%;
-        width: 300px;
-        height: 300px;
-        background: radial-gradient(circle, #3b82f620 0%, transparent 70%);
-        pointer-events: none;
-    }
-    .main-title {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #e2e8f0;
-        margin: 0;
-        letter-spacing: -0.5px;
-    }
-    .main-subtitle {
-        color: #64748b;
-        font-size: 0.9rem;
-        margin-top: 6px;
-        font-family: 'JetBrains Mono', monospace;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #0f172a, #1e293b);
-        border: 1px solid #1e3a5f;
-        border-radius: 12px;
-        padding: 18px 22px;
-        text-align: center;
-    }
-    .metric-number {
-        font-size: 2.2rem;
-        font-weight: 700;
-        font-family: 'JetBrains Mono', monospace;
-        line-height: 1;
-    }
-    .metric-label {
-        font-size: 0.75rem;
-        color: #64748b;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        margin-top: 6px;
-    }
-    .breakout-card {
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-        border-radius: 12px;
-        padding: 16px 20px;
-        margin-bottom: 10px;
-        border-left: 3px solid #22c55e;
-        transition: all 0.2s;
-    }
-    .breakout-card.no-vol {
-        border-left-color: #f59e0b;
-    }
-    .stock-symbol {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 1.1rem;
-        font-weight: 700;
-        color: #e2e8f0;
-    }
-    .signal-badge {
-        display: inline-block;
-        padding: 3px 10px;
-        border-radius: 20px;
-        font-size: 0.7rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    .badge-strong {
-        background: #14532d;
-        color: #4ade80;
-        border: 1px solid #22c55e40;
-    }
-    .badge-weak {
-        background: #451a03;
-        color: #fbbf24;
-        border: 1px solid #f59e0b40;
-    }
-    .stButton > button {
-        background: linear-gradient(135deg, #1d4ed8, #3b82f6);
-        color: white;
-        border: none;
-        border-radius: 10px;
-        padding: 10px 28px;
-        font-family: 'Sora', sans-serif;
-        font-weight: 600;
-        font-size: 0.9rem;
-        width: 100%;
-        transition: all 0.2s;
-        box-shadow: 0 4px 15px #3b82f630;
-    }
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 20px #3b82f650;
-    }
-    div[data-testid="stSelectbox"] label,
-    div[data-testid="stSlider"] label,
-    div[data-testid="stMultiSelect"] label {
-        color: #94a3b8 !important;
-        font-size: 0.8rem !important;
-        text-transform: uppercase;
-        letter-spacing: 0.8px;
-    }
-    .sector-tag {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-size: 0.65rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-left: 8px;
-    }
-    .timestamp {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 0.75rem;
-        color: #475569;
-    }
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+.stApp { background: #0a0f1e; }
+.block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
+section[data-testid="stSidebar"] {
+    background: #0d1424 !important;
+    border-right: 1px solid #1a2540 !important;
+}
+
+.kpi-row { display: flex; gap: 12px; margin-bottom: 24px; }
+.kpi {
+    flex: 1; background: #111827;
+    border: 1px solid #1f2d47; border-radius: 10px;
+    padding: 18px 16px; text-align: center;
+}
+.kpi-val { font-family: 'IBM Plex Mono', monospace; font-size: 1.9rem; font-weight: 600; line-height: 1.1; }
+.kpi-lbl { font-size: 0.68rem; color: #4b5e7e; text-transform: uppercase; letter-spacing: 1.2px; margin-top: 5px; }
+
+.tbl-wrap { background: #0d1424; border: 1px solid #1a2540; border-radius: 12px; overflow: hidden; }
+.tbl-header {
+    display: grid;
+    grid-template-columns: 100px 90px 110px 120px 140px 80px 80px 90px;
+    padding: 10px 20px;
+    border-bottom: 1px solid #1a2540;
+    gap: 0;
+}
+.tbl-row {
+    display: grid;
+    grid-template-columns: 100px 90px 110px 120px 140px 80px 80px 90px;
+    padding: 14px 20px;
+    border-bottom: 1px solid #0f1825;
+    gap: 0;
+    transition: background 0.15s;
+}
+.tbl-row:hover { background: #111827; }
+.tbl-row:last-child { border-bottom: none; }
+.col-hdr { font-size: 0.62rem; color: #2d3f5c; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+.sym { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 0.9rem; color: #e2e8f0; }
+.mono { font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem; color: #94a3b8; }
+.scroll-body { max-height: 500px; overflow-y: auto; }
+.scroll-body::-webkit-scrollbar { width: 3px; }
+.scroll-body::-webkit-scrollbar-thumb { background: #1f2d47; border-radius: 2px; }
+
+.pill { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.3px; }
+.pill-hot  { background: #0d2a1a; color: #4ade80; border: 1px solid #22c55e30; }
+.pill-warm { background: #251a05; color: #fbbf24; border: 1px solid #f59e0b30; }
+.pill-cool { background: #0a1b30; color: #60a5fa; border: 1px solid #3b82f630; }
+
+.sec-badge { display:inline-block; padding:2px 7px; border-radius:4px; font-size:0.6rem; font-weight:600; text-transform:uppercase; letter-spacing:0.4px; }
+
+.prox-wrap { display: flex; align-items: center; gap: 7px; }
+.prox-bg { flex:1; height:5px; background:#1a2540; border-radius:3px; overflow:hidden; }
+.prox-fill { height:100%; border-radius:3px; }
+
+.sec-head {
+    font-size: 0.65rem; color: #2d3f5c; text-transform: uppercase;
+    letter-spacing: 1.5px; font-weight: 600; margin: 24px 0 12px;
+    display: flex; align-items: center; gap: 10px;
+}
+.sec-head::after { content:''; flex:1; height:1px; background:#1a2540; }
+
+.chart-wrap { background:#0d1424; border:1px solid #1a2540; border-radius:12px; padding:4px; margin-top:4px; }
+
+div[data-testid="stSlider"] label { color:#4b5e7e !important; font-size:0.7rem !important; text-transform:uppercase; letter-spacing:0.8px; }
+.stButton > button {
+    background: #1d4ed8; color: white; border: none; border-radius: 8px;
+    padding: 10px 0; font-family: 'DM Sans', sans-serif; font-weight: 600;
+    font-size: 0.88rem; width: 100%; margin-top: 8px;
+}
+.stButton > button:hover { background: #2563eb; }
 </style>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
-# WATCHLIST
-# ─────────────────────────────────────────────────────────────
+# ── DATA ──────────────────────────────────────────────────────
 WATCHLIST = [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
-    "HINDUNILVR.NS", "SBIN.NS", "BAJFINANCE.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
-    "AXISBANK.NS", "LT.NS", "HCLTECH.NS", "ASIANPAINT.NS", "WIPRO.NS",
-    "MARUTI.NS", "SUNPHARMA.NS", "TITAN.NS", "ULTRACEMCO.NS", "NESTLEIND.NS",
-    "ONGC.NS", "POWERGRID.NS", "NTPC.NS", "TECHM.NS", "BAJAJFINSV.NS",
-    "TATAMOTORS.NS", "DRREDDY.NS", "DIVISLAB.NS", "CIPLA.NS", "ADANIPORTS.NS",
-    "COALINDIA.NS", "GRASIM.NS", "HINDALCO.NS", "JSWSTEEL.NS", "TATASTEEL.NS",
-    "BPCL.NS", "IOC.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "BAJAJ-AUTO.NS",
-    "BRITANNIA.NS", "DABUR.NS", "MARICO.NS", "COLPAL.NS", "GODREJCP.NS",
-    "PIDILITIND.NS", "BERGEPAINT.NS", "HAVELLS.NS", "VOLTAS.NS", "ITC.NS",
-    "PERSISTENT.NS", "MPHASIS.NS", "LTIM.NS", "COFORGE.NS", "ZOMATO.NS",
-    "IRCTC.NS", "INDHOTEL.NS", "RVNL.NS", "IRFC.NS", "RECLTD.NS",
-    "PFC.NS", "BANKBARODA.NS", "CANBK.NS", "PNB.NS", "FEDERALBNK.NS",
-    "IDFCFIRSTB.NS", "INDUSINDBK.NS", "AUBANK.NS", "CHOLAFIN.NS", "MUTHOOTFIN.NS",
-    "APOLLOHOSP.NS", "FORTIS.NS", "AUROPHARMA.NS", "LUPIN.NS", "TORNTPHARM.NS",
-    "TATAPOWER.NS", "ADANIGREEN.NS", "NAUKRI.NS", "INDIGO.NS", "OFSS.NS",
+    "RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS",
+    "HINDUNILVR.NS","SBIN.NS","BAJFINANCE.NS","BHARTIARTL.NS","KOTAKBANK.NS",
+    "AXISBANK.NS","LT.NS","HCLTECH.NS","ASIANPAINT.NS","WIPRO.NS",
+    "MARUTI.NS","SUNPHARMA.NS","TITAN.NS","ULTRACEMCO.NS","NESTLEIND.NS",
+    "ONGC.NS","POWERGRID.NS","NTPC.NS","TECHM.NS","BAJAJFINSV.NS",
+    "TATAMOTORS.NS","DRREDDY.NS","DIVISLAB.NS","CIPLA.NS","ADANIPORTS.NS",
+    "COALINDIA.NS","GRASIM.NS","HINDALCO.NS","JSWSTEEL.NS","TATASTEEL.NS",
+    "BPCL.NS","IOC.NS","HEROMOTOCO.NS","EICHERMOT.NS","BAJAJ-AUTO.NS",
+    "BRITANNIA.NS","DABUR.NS","MARICO.NS","COLPAL.NS","GODREJCP.NS",
+    "PIDILITIND.NS","BERGEPAINT.NS","HAVELLS.NS","VOLTAS.NS","ITC.NS",
+    "PERSISTENT.NS","MPHASIS.NS","LTIM.NS","COFORGE.NS","ZOMATO.NS",
+    "IRCTC.NS","INDHOTEL.NS","RVNL.NS","IRFC.NS","RECLTD.NS",
+    "PFC.NS","BANKBARODA.NS","CANBK.NS","PNB.NS","FEDERALBNK.NS",
+    "IDFCFIRSTB.NS","INDUSINDBK.NS","AUBANK.NS","CHOLAFIN.NS","MUTHOOTFIN.NS",
+    "APOLLOHOSP.NS","FORTIS.NS","AUROPHARMA.NS","LUPIN.NS","TORNTPHARM.NS",
+    "TATAPOWER.NS","ADANIGREEN.NS","NAUKRI.NS","INDIGO.NS","OFSS.NS",
+    "DIXON.NS","TATACONSUM.NS","MOTHERSON.NS","BALKRISIND.NS","DMART.NS",
+    "ABCAPITAL.NS","MFSL.NS","SBICARD.NS","HDFCAMC.NS","NIPPONLIFE.NS",
 ]
 
 SECTOR_MAP = {
@@ -207,420 +135,332 @@ SECTOR_MAP = {
     "APOLLOHOSP.NS":"Pharma","FORTIS.NS":"Pharma","AUROPHARMA.NS":"Pharma",
     "LUPIN.NS":"Pharma","TORNTPHARM.NS":"Pharma","TATAPOWER.NS":"Energy",
     "ADANIGREEN.NS":"Energy","NAUKRI.NS":"IT","INDIGO.NS":"Consumer","OFSS.NS":"IT",
+    "DIXON.NS":"Consumer","TATACONSUM.NS":"FMCG","MOTHERSON.NS":"Auto",
+    "BALKRISIND.NS":"Auto","DMART.NS":"Consumer","ABCAPITAL.NS":"Finance",
+    "MFSL.NS":"Finance","SBICARD.NS":"Finance","HDFCAMC.NS":"Finance","NIPPONLIFE.NS":"Finance",
 }
 
 SECTOR_COLORS = {
-    "Banking":"#3b82f6","IT":"#8b5cf6","FMCG":"#f59e0b","Finance":"#10b981",
-    "Energy":"#ef4444","Infra":"#06b6d4","Auto":"#f97316","Pharma":"#ec4899",
-    "Consumer":"#84cc16","Metal":"#a8a29e","Cement":"#d97706","Telecom":"#0ea5e9",
+    "Banking":"#3b82f6","IT":"#a78bfa","FMCG":"#fb923c","Finance":"#34d399",
+    "Energy":"#f87171","Infra":"#22d3ee","Auto":"#f97316","Pharma":"#f472b6",
+    "Consumer":"#a3e635","Metal":"#94a3b8","Cement":"#fbbf24","Telecom":"#38bdf8",
 }
 
-# ─────────────────────────────────────────────────────────────
-# CORE LOGIC
-# ─────────────────────────────────────────────────────────────
+# ── LOGIC ─────────────────────────────────────────────────────
 def find_swings(df, lookback=5):
-    highs = df['High'].values
-    lows  = df['Low'].values
-    n     = len(df)
-    swing_highs, swing_lows = [], []
+    highs, lows, n = df['High'].values, df['Low'].values, len(df)
+    sh, sl = [], []
     for i in range(lookback, n - lookback):
-        if highs[i] == max(highs[i - lookback: i + lookback + 1]):
-            swing_highs.append((df.index[i], round(float(highs[i]), 2)))
-        if lows[i] == min(lows[i - lookback: i + lookback + 1]):
-            swing_lows.append((df.index[i], round(float(lows[i]), 2)))
-    return swing_highs, swing_lows
+        if highs[i] == max(highs[i-lookback:i+lookback+1]):
+            sh.append((df.index[i], round(float(highs[i]), 2)))
+        if lows[i] == min(lows[i-lookback:i+lookback+1]):
+            sl.append((df.index[i], round(float(lows[i]), 2)))
+    return sh, sl
 
 
-def check_breakout(df, swing_highs, vol_mult=1.2):
+def check_approaching(df, swing_highs, threshold_pct, vol_mult):
     if not swing_highs:
-        return False, None, False, 0
-    last_swing_date, last_swing_price = swing_highs[-1]
-    today_close  = float(df['Close'].iloc[-1])
-    today_volume = float(df['Volume'].iloc[-1])
-    avg_volume   = float(df['Volume'].iloc[-21:-1].mean())
-    vol_ratio    = today_volume / avg_volume if avg_volume > 0 else 0
-    is_breakout  = today_close > last_swing_price
-    vol_ok       = vol_ratio >= vol_mult
-    return is_breakout, last_swing_price, vol_ok, round(vol_ratio, 2)
+        return False, None, None, False, 0
+    _, last_sh = swing_highs[-1]
+    close    = float(df['Close'].iloc[-1])
+    vol_now  = float(df['Volume'].iloc[-1])
+    vol_avg  = float(df['Volume'].iloc[-21:-1].mean())
+    vol_ratio= round(vol_now / vol_avg, 2) if vol_avg > 0 else 0
+    if close >= last_sh:          # already broken out — skip
+        return False, None, None, False, 0
+    gap_pct = round((last_sh - close) / last_sh * 100, 2)
+    if gap_pct > threshold_pct:   # too far away — skip
+        return False, None, None, False, 0
+    return True, last_sh, gap_pct, vol_ratio >= vol_mult, vol_ratio
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def run_screener(swing_lookback, vol_multiplier, min_mcap_cr):
+def run_screener(lookback, vol_mult, min_mcap, threshold):
     results = []
-    for symbol in WATCHLIST:
+    for sym in WATCHLIST:
         try:
-            ticker = yf.Ticker(symbol)
-            df     = ticker.history(period="6mo", interval="1d")
-            if df.empty or len(df) < (swing_lookback * 2 + 10):
+            t  = yf.Ticker(sym)
+            df = t.history(period="2y", interval="1d")   # full 2-year history
+            if df.empty or len(df) < lookback * 2 + 20:
                 continue
-            info = ticker.fast_info
-            mcap = getattr(info, "market_cap", 0) or 0
-            mcap_cr = mcap / 1e7
-            if mcap_cr < min_mcap_cr:
+            mcap_cr = (getattr(t.fast_info, "market_cap", 0) or 0) / 1e7
+            if mcap_cr < min_mcap:
                 continue
-            swing_highs, swing_lows = find_swings(df, swing_lookback)
-            if not swing_highs:
+            sh, sl = find_swings(df, lookback)
+            ok, last_sh, gap, vol_ok, vol_r = check_approaching(df, sh, threshold, vol_mult)
+            if not ok:
                 continue
-            is_bo, last_sh, vol_ok, vol_ratio = check_breakout(df, swing_highs, vol_multiplier)
-            if not is_bo:
-                continue
-            close     = round(float(df['Close'].iloc[-1]), 2)
-            prev_close= round(float(df['Close'].iloc[-2]), 2)
-            day_chg   = round((close - prev_close) / prev_close * 100, 2)
-            bo_pct    = round((close - last_sh) / last_sh * 100, 2)
-            last_sl   = swing_lows[-1][1] if swing_lows else None
-            risk      = round((close - last_sl) / close * 100, 2) if last_sl else None
-            hist_slice = df['Close'].iloc[-20:].tolist()
+            close   = round(float(df['Close'].iloc[-1]), 2)
+            prev    = round(float(df['Close'].iloc[-2]), 2)
+            day_chg = round((close - prev) / prev * 100, 2)
+            signal  = "HOT" if gap <= 0.5 else "WARM" if gap <= 1.2 else "CLOSE"
             results.append({
-                "symbol"      : symbol.replace(".NS", ""),
-                "full_symbol" : symbol,
-                "close"       : close,
-                "day_chg"     : day_chg,
-                "swing_high"  : last_sh,
-                "swing_high_date": swing_highs[-1][0].strftime("%d %b"),
-                "swing_low"   : last_sl,
-                "breakout_pct": bo_pct,
-                "vol_confirmed": vol_ok,
-                "vol_ratio"   : vol_ratio,
-                "mcap_cr"     : round(mcap_cr),
-                "sector"      : SECTOR_MAP.get(symbol, "Other"),
-                "history"     : hist_slice,
-                "all_swing_highs": [(d.strftime("%d %b"), p) for d, p in swing_highs[-5:]],
-                "all_swing_lows" : [(d.strftime("%d %b"), p) for d, p in swing_lows[-5:]],
+                "symbol"   : sym.replace(".NS",""),
+                "full_sym" : sym,
+                "close"    : close,
+                "day_chg"  : day_chg,
+                "swing_high": last_sh,
+                "sh_date"  : sh[-1][0].strftime("%d %b '%y"),
+                "swing_low": sl[-1][1] if sl else None,
+                "gap_pct"  : gap,
+                "vol_ok"   : vol_ok,
+                "vol_ratio": vol_r,
+                "mcap_cr"  : round(mcap_cr),
+                "sector"   : SECTOR_MAP.get(sym, "Other"),
+                "signal"   : signal,
+                "sh_list"  : [(d.strftime("%Y-%m-%d"), p) for d, p in sh[-8:]],
+                "sl_list"  : [(d.strftime("%Y-%m-%d"), p) for d, p in sl[-8:]],
             })
         except:
             continue
-    return sorted(results, key=lambda x: (not x["vol_confirmed"], -x["breakout_pct"]))
+    order = {"HOT":0,"WARM":1,"CLOSE":2}
+    return sorted(results, key=lambda x: (order[x["signal"]], x["gap_pct"]))
 
 
-def make_candlestick_chart(symbol, swing_highs, swing_lows):
-    try:
-        df = yf.Ticker(f"{symbol}.NS").history(period="3mo", interval="1d")
-        if df.empty:
-            return None
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                            row_heights=[0.72, 0.28], vertical_spacing=0.03)
-        fig.add_trace(go.Candlestick(
-            x=df.index, open=df['Open'], high=df['High'],
-            low=df['Low'], close=df['Close'],
-            increasing_line_color='#22c55e', decreasing_line_color='#ef4444',
-            increasing_fillcolor='#22c55e', decreasing_fillcolor='#ef4444',
-            name="Price", line_width=1
-        ), row=1, col=1)
-
-        sh_dates = [s[0] for s in swing_highs[-5:]]
-        sh_prices= [s[1] for s in swing_highs[-5:]]
-        fig.add_trace(go.Scatter(
-            x=[df.index[df.index.get_loc(d, method='nearest')] for d in [df.index[-1]][:1]],
-            y=sh_prices[-1:],
-            mode='lines',
-            line=dict(color='#f59e0b', width=1.5, dash='dash'),
-            name=f"Swing High ₹{sh_prices[-1] if sh_prices else ''}",
-        ), row=1, col=1)
-
-        if swing_lows:
-            sl_prices = [s[1] for s in swing_lows[-3:]]
-            fig.add_trace(go.Scatter(
-                x=[df.index[0], df.index[-1]],
-                y=[sl_prices[-1], sl_prices[-1]],
-                mode='lines',
-                line=dict(color='#3b82f6', width=1.5, dash='dot'),
-                name=f"Swing Low ₹{sl_prices[-1]}",
-            ), row=1, col=1)
-
-        colors = ['#22c55e' if v >= df['Volume'].mean() else '#475569' for v in df['Volume']]
-        fig.add_trace(go.Bar(
-            x=df.index, y=df['Volume'], marker_color=colors,
-            name="Volume", showlegend=False
-        ), row=2, col=1)
-
-        fig.update_layout(
-            height=480,
-            plot_bgcolor='#0f172a', paper_bgcolor='#0f172a',
-            font=dict(family='JetBrains Mono', color='#94a3b8', size=11),
-            xaxis_rangeslider_visible=False,
-            margin=dict(l=10, r=10, t=10, b=10),
-            legend=dict(orientation='h', y=1.02, font=dict(size=10),
-                        bgcolor='rgba(0,0,0,0)', bordercolor='rgba(0,0,0,0)'),
-        )
-        fig.update_xaxes(gridcolor='#1e293b', showgrid=True, zeroline=False)
-        fig.update_yaxes(gridcolor='#1e293b', showgrid=True, zeroline=False)
-        return fig
-    except:
-        return None
-
-
-# ─────────────────────────────────────────────────────────────
-# SIDEBAR
-# ─────────────────────────────────────────────────────────────
+# ── SIDEBAR ───────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
-    <div style='text-align:center; padding: 16px 0 8px'>
-        <div style='font-size:2rem'>📈</div>
-        <div style='font-weight:700; color:#e2e8f0; font-size:1rem; letter-spacing:-0.3px'>NSE Screener</div>
-        <div style='color:#475569; font-size:0.72rem; font-family:JetBrains Mono'>Swing Breakout · Daily</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.divider()
-
-    swing_lookback = st.slider("Swing Lookback (candles)", 3, 10, 5,
-        help="Number of candles on each side to confirm a swing point")
-    vol_multiplier = st.slider("Volume Multiplier", 1.0, 3.0, 1.2, 0.1,
-        help="Breakout volume must exceed X × 20-day average")
-    min_mcap = st.slider("Min Market Cap (₹ Cr)", 500, 5000, 500, 100)
-    vol_filter = st.checkbox("Show only volume-confirmed", value=False)
-
-    st.divider()
-
-    run_btn = st.button("🔍  Run Screener")
-
-    st.markdown("""
-    <div style='margin-top:24px; padding:14px; background:#0f172a; border-radius:10px; border:1px solid #1e293b'>
-        <div style='color:#64748b; font-size:0.7rem; text-transform:uppercase; letter-spacing:1px; margin-bottom:10px'>Legend</div>
-        <div style='font-size:0.78rem; color:#94a3b8; line-height:2'>
-            🟢 <b>Strong</b> — Vol confirmed<br>
-            🟡 <b>Weak</b> — No vol confirm<br>
-            📊 <b>Swing High</b> — Resistance<br>
-            📉 <b>Swing Low</b> — Support
+    <div style='padding:14px 0 18px; border-bottom:1px solid #1a2540; margin-bottom:18px'>
+        <div style='font-size:1.05rem; font-weight:700; color:#e2e8f0'>🎯 Breakout Watch</div>
+        <div style='font-size:0.7rem; color:#2d3f5c; font-family:IBM Plex Mono; margin-top:3px'>
+            Pre-breakout · Daily · NSE
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
-# HEADER
-# ─────────────────────────────────────────────────────────────
-st.markdown(f"""
-<div class="main-header">
-    <div class="main-title">📈 NSE Swing Breakout Screener</div>
-    <div class="main-subtitle">
-        Daily Timeframe · >₹{min_mcap} Cr Market Cap · 
-        Lookback: {swing_lookback} candles · Vol: {vol_multiplier}x
+    threshold = st.slider("Gap to swing high (%)", 0.3, 5.0, 2.0, 0.1,
+        help="Only show stocks within X% BELOW their swing high — not yet broken out")
+    lookback  = st.slider("Swing lookback (candles)", 3, 15, 5,
+        help="Candles on each side to confirm a swing point")
+    vol_mult  = st.slider("Volume buildup multiplier", 1.0, 3.0, 1.2, 0.1)
+    min_mcap  = st.slider("Min market cap (₹ Cr)", 500, 10000, 500, 250)
+    vol_only  = st.checkbox("Only with volume buildup", value=False)
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    run_btn = st.button("🔍  Scan Now")
+
+    st.markdown("""
+    <div style='margin-top:24px; padding:14px; background:#080d1a;
+                border:1px solid #1a2540; border-radius:8px; font-size:0.72rem; line-height:2.1'>
+        <div style='color:#1f2d47; font-size:0.6rem; text-transform:uppercase;
+                    letter-spacing:1px; margin-bottom:6px'>Signal guide</div>
+        <span style='color:#4ade80; font-weight:700'>HOT</span>
+        <span style='color:#2d3f5c'> — within 0.5% of swing high</span><br>
+        <span style='color:#fbbf24; font-weight:700'>WARM</span>
+        <span style='color:#2d3f5c'> — 0.5 – 1.2% below</span><br>
+        <span style='color:#60a5fa; font-weight:700'>CLOSE</span>
+        <span style='color:#2d3f5c'> — 1.2 – 2% below</span><br>
+        <span style='color:#34d399'>↑ Vol</span>
+        <span style='color:#2d3f5c'> — volume building up</span>
     </div>
-    <div class="timestamp" style="margin-top:8px">
-        Last run: {datetime.now().strftime("%d %b %Y, %I:%M %p IST")}
+    """, unsafe_allow_html=True)
+
+# ── HEADER ────────────────────────────────────────────────────
+st.markdown(f"""
+<div style='margin-bottom:20px'>
+    <div style='font-size:1.5rem; font-weight:700; color:#e2e8f0; letter-spacing:-0.5px'>
+        🎯 NSE Breakout Watch
+    </div>
+    <div style='font-size:0.76rem; color:#2d3f5c; font-family:IBM Plex Mono; margin-top:5px'>
+        Stocks approaching swing high resistance &nbsp;·&nbsp; Daily &nbsp;·&nbsp;
+        2-year history &nbsp;·&nbsp; {datetime.now().strftime("%d %b %Y  %I:%M %p")}
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
-# MAIN CONTENT
-# ─────────────────────────────────────────────────────────────
+# ── SESSION STATE ─────────────────────────────────────────────
 if "results" not in st.session_state:
     st.session_state.results = None
 
 if run_btn:
-    with st.spinner("🔍 Scanning NSE stocks... this takes ~60 seconds"):
-        st.session_state.results = run_screener(swing_lookback, vol_multiplier, min_mcap)
+    with st.spinner("Scanning 90 stocks · 2Y daily data · this takes ~90 sec…"):
+        st.session_state.results = run_screener(lookback, vol_mult, min_mcap, threshold)
 
 if st.session_state.results is None:
     st.markdown("""
-    <div style='text-align:center; padding:80px 20px; color:#334155'>
-        <div style='font-size:4rem; margin-bottom:16px'>🎯</div>
-        <div style='font-size:1.3rem; font-weight:600; color:#475569'>Ready to scan</div>
-        <div style='font-size:0.85rem; margin-top:8px'>
-            Adjust parameters in the sidebar and click <b>Run Screener</b>
+    <div style='text-align:center; padding:100px 20px'>
+        <div style='font-size:3rem; opacity:0.15; margin-bottom:14px'>🎯</div>
+        <div style='color:#1a2540; font-size:1rem; font-weight:600'>
+            Configure parameters and click Scan Now
+        </div>
+        <div style='color:#0f1825; font-size:0.8rem; margin-top:6px'>
+            Finds stocks that are close to — but have NOT yet broken — their swing high
         </div>
     </div>
     """, unsafe_allow_html=True)
     st.stop()
 
 results = st.session_state.results
-if vol_filter:
-    results = [r for r in results if r["vol_confirmed"]]
+if vol_only:
+    results = [r for r in results if r["vol_ok"]]
 
-# ─────────────────────────────────────────────────────────────
-# METRICS ROW
-# ─────────────────────────────────────────────────────────────
-total      = len(results)
-strong     = sum(1 for r in results if r["vol_confirmed"])
-weak       = total - strong
-sectors    = len(set(r["sector"] for r in results))
-avg_bo_pct = round(sum(r["breakout_pct"] for r in results) / total, 2) if total else 0
+# ── KPIs ──────────────────────────────────────────────────────
+total  = len(results)
+hot    = sum(1 for r in results if r["signal"] == "HOT")
+warm   = sum(1 for r in results if r["signal"] == "WARM")
+vol_b  = sum(1 for r in results if r["vol_ok"])
+avg_gap= round(sum(r["gap_pct"] for r in results) / total, 2) if total else 0
 
-c1, c2, c3, c4, c5 = st.columns(5)
-for col, num, label, color in [
-    (c1, total,    "Breakouts Found",    "#3b82f6"),
-    (c2, strong,   "Vol Confirmed ✅",   "#22c55e"),
-    (c3, weak,     "Weak Signal ⚠️",    "#f59e0b"),
-    (c4, sectors,  "Sectors",            "#8b5cf6"),
-    (c5, f"+{avg_bo_pct}%", "Avg Breakout", "#10b981"),
-]:
-    col.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-number" style="color:{color}">{num}</div>
-        <div class="metric-label">{label}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────
-# SECTOR DISTRIBUTION CHART
-# ─────────────────────────────────────────────────────────────
-if results:
-    sector_counts = {}
-    for r in results:
-        sector_counts[r["sector"]] = sector_counts.get(r["sector"], 0) + 1
-
-    col_chart, col_list = st.columns([1, 2])
-
-    with col_chart:
-        fig_pie = go.Figure(go.Pie(
-            labels=list(sector_counts.keys()),
-            values=list(sector_counts.values()),
-            hole=0.55,
-            marker=dict(colors=[SECTOR_COLORS.get(s, "#64748b") for s in sector_counts.keys()],
-                        line=dict(color='#0f172a', width=2)),
-            textfont=dict(family='JetBrains Mono', size=11),
-        ))
-        fig_pie.update_layout(
-            height=260,
-            showlegend=True,
-            legend=dict(font=dict(size=10, family='JetBrains Mono'), bgcolor='rgba(0,0,0,0)'),
-            plot_bgcolor='#0f172a', paper_bgcolor='#0f172a',
-            font=dict(color='#94a3b8'),
-            margin=dict(l=0, r=0, t=0, b=0),
-            annotations=[dict(text=f"<b>{total}</b><br>stocks", x=0.5, y=0.5,
-                              font=dict(size=14, color='#e2e8f0', family='JetBrains Mono'),
-                              showarrow=False)]
-        )
-        st.plotly_chart(fig_pie, use_container_width=True, config={"displayModeBar": False})
-
-    with col_list:
-        # Breakout % bar chart
-        syms = [r["symbol"] for r in results[:12]]
-        bpcts = [r["breakout_pct"] for r in results[:12]]
-        colors_bar = ["#22c55e" if r["vol_confirmed"] else "#f59e0b" for r in results[:12]]
-
-        fig_bar = go.Figure(go.Bar(
-            y=syms[::-1], x=bpcts[::-1], orientation='h',
-            marker=dict(color=colors_bar[::-1],
-                        line=dict(color='rgba(0,0,0,0)')),
-            text=[f"+{p}%" for p in bpcts[::-1]],
-            textposition='outside',
-            textfont=dict(family='JetBrains Mono', size=10, color='#94a3b8'),
-        ))
-        fig_bar.update_layout(
-            height=260,
-            plot_bgcolor='#0f172a', paper_bgcolor='#0f172a',
-            font=dict(color='#94a3b8', family='JetBrains Mono', size=10),
-            margin=dict(l=10, r=60, t=0, b=0),
-            xaxis=dict(gridcolor='#1e293b', zeroline=False, showticklabels=False),
-            yaxis=dict(gridcolor='rgba(0,0,0,0)'),
-            bargap=0.3,
-        )
-        st.plotly_chart(fig_bar, use_container_width=True, config={"displayModeBar": False})
-
-st.divider()
-
-# ─────────────────────────────────────────────────────────────
-# STOCK CARDS + CHART DETAIL
-# ─────────────────────────────────────────────────────────────
-st.markdown("""
-<div style='font-size:0.75rem; color:#475569; text-transform:uppercase;
-            letter-spacing:1.5px; font-weight:600; margin-bottom:14px'>
-    🔥 Breakout Signals — Click a stock to view chart
+st.markdown(f"""
+<div class="kpi-row">
+    <div class="kpi"><div class="kpi-val" style="color:#60a5fa">{total}</div>
+        <div class="kpi-lbl">Setups Found</div></div>
+    <div class="kpi"><div class="kpi-val" style="color:#4ade80">{hot}</div>
+        <div class="kpi-lbl">Hot &lt;0.5%</div></div>
+    <div class="kpi"><div class="kpi-val" style="color:#fbbf24">{warm}</div>
+        <div class="kpi-lbl">Warm &lt;1.2%</div></div>
+    <div class="kpi"><div class="kpi-val" style="color:#34d399">{vol_b}</div>
+        <div class="kpi-lbl">Vol Building</div></div>
+    <div class="kpi"><div class="kpi-val" style="color:#a78bfa">{avg_gap}%</div>
+        <div class="kpi-lbl">Avg Gap</div></div>
 </div>
 """, unsafe_allow_html=True)
+
+# ── TABLE ─────────────────────────────────────────────────────
+st.markdown('<div class="sec-head">Pre-Breakout Setups</div>', unsafe_allow_html=True)
 
 if not results:
-    st.info("No breakouts found. Try lowering the volume multiplier or market cap filter.")
-else:
-    selected = st.session_state.get("selected_stock", None)
+    st.markdown("""
+    <div style='text-align:center; padding:50px; color:#1f2d47'>
+        No setups match. Try raising the gap threshold or lowering market cap.
+    </div>""", unsafe_allow_html=True)
+    st.stop()
 
-    for r in results:
-        sec_color = SECTOR_COLORS.get(r["sector"], "#64748b")
-        badge_class = "badge-strong" if r["vol_confirmed"] else "badge-weak"
-        badge_text  = "✅ Strong Signal" if r["vol_confirmed"] else "⚠️ Weak Signal"
-        day_color   = "#22c55e" if r["day_chg"] >= 0 else "#ef4444"
-        border_col  = "#22c55e" if r["vol_confirmed"] else "#f59e0b"
+rows_html = ""
+for r in results:
+    sc      = SECTOR_COLORS.get(r["sector"], "#64748b")
+    dc      = "#4ade80" if r["day_chg"] >= 0 else "#f87171"
+    pcls    = {"HOT":"pill-hot","WARM":"pill-warm","CLOSE":"pill-cool"}[r["signal"]]
+    plbl    = {"HOT":"🔴 HOT","WARM":"🟡 WARM","CLOSE":"🔵 CLOSE"}[r["signal"]]
+    prox    = round((1 - r["gap_pct"] / threshold) * 100)
+    pcol    = "#4ade80" if r["signal"]=="HOT" else "#fbbf24" if r["signal"]=="WARM" else "#60a5fa"
+    vc      = "#34d399" if r["vol_ok"] else "#2d3f5c"
+    vlbl    = f"{'↑ ' if r['vol_ok'] else ''}{r['vol_ratio']}x"
 
-        col_card, col_btn = st.columns([6, 1])
-        with col_card:
-            st.markdown(f"""
-            <div class="breakout-card {'no-vol' if not r['vol_confirmed'] else ''}"
-                 style="border-left-color:{border_col}">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px">
-                    <div style="display:flex; align-items:center; gap:10px">
-                        <span class="stock-symbol">{r['symbol']}</span>
-                        <span class="sector-tag" style="background:{sec_color}20; color:{sec_color}; border:1px solid {sec_color}40">
-                            {r['sector']}
-                        </span>
-                        <span class="signal-badge {badge_class}">{badge_text}</span>
-                    </div>
-                    <div style="display:flex; gap:24px; align-items:center">
-                        <div style="text-align:right">
-                            <div style="font-family:'JetBrains Mono'; font-size:1.1rem; color:#e2e8f0; font-weight:700">
-                                ₹{r['close']:,}
-                            </div>
-                            <div style="font-size:0.75rem; color:{day_color}">
-                                {'+' if r['day_chg'] >= 0 else ''}{r['day_chg']}% today
-                            </div>
-                        </div>
-                        <div style="text-align:center">
-                            <div style="font-size:0.65rem; color:#64748b; text-transform:uppercase; letter-spacing:0.5px">Swing High</div>
-                            <div style="font-family:'JetBrains Mono'; font-size:0.85rem; color:#f59e0b">₹{r['swing_high']:,}</div>
-                            <div style="font-size:0.6rem; color:#475569">{r['swing_high_date']}</div>
-                        </div>
-                        <div style="text-align:center">
-                            <div style="font-size:0.65rem; color:#64748b; text-transform:uppercase; letter-spacing:0.5px">Swing Low</div>
-                            <div style="font-family:'JetBrains Mono'; font-size:0.85rem; color:#3b82f6">
-                                {'₹' + str(r['swing_low']) if r['swing_low'] else 'N/A'}
-                            </div>
-                        </div>
-                        <div style="text-align:center">
-                            <div style="font-size:0.65rem; color:#64748b; text-transform:uppercase; letter-spacing:0.5px">Breakout</div>
-                            <div style="font-family:'JetBrains Mono'; font-size:0.85rem; color:#22c55e; font-weight:700">
-                                +{r['breakout_pct']}%
-                            </div>
-                        </div>
-                        <div style="text-align:center">
-                            <div style="font-size:0.65rem; color:#64748b; text-transform:uppercase; letter-spacing:0.5px">Vol Ratio</div>
-                            <div style="font-family:'JetBrains Mono'; font-size:0.85rem; color:{'#22c55e' if r['vol_confirmed'] else '#f59e0b'}">
-                                {r['vol_ratio']}x
-                            </div>
-                        </div>
-                        <div style="text-align:right">
-                            <div style="font-size:0.65rem; color:#64748b">Mkt Cap</div>
-                            <div style="font-size:0.78rem; color:#94a3b8">₹{r['mcap_cr']:,} Cr</div>
-                        </div>
-                    </div>
+    rows_html += f"""
+    <div class="tbl-row">
+        <span class="sym">{r['symbol']}</span>
+        <span><span class="pill {pcls}">{plbl}</span></span>
+        <span class="mono">₹{r['close']:,}
+            <span style="font-size:.65rem;color:{dc}"> {'+' if r['day_chg']>=0 else ''}{r['day_chg']}%</span>
+        </span>
+        <span class="mono">₹{r['swing_high']:,}
+            <span style="display:block;font-size:.6rem;color:#2d3f5c">{r['sh_date']}</span>
+        </span>
+        <span>
+            <div class="prox-wrap">
+                <div class="prox-bg">
+                    <div class="prox-fill" style="width:{prox}%;background:{pcol};box-shadow:0 0 5px {pcol}50"></div>
                 </div>
+                <span style="font-family:IBM Plex Mono;font-size:.75rem;color:{pcol};min-width:38px">{r['gap_pct']}%</span>
             </div>
-            """, unsafe_allow_html=True)
+        </span>
+        <span style="font-family:IBM Plex Mono;font-size:.78rem;color:{vc}">{vlbl}</span>
+        <span><span class="sec-badge" style="background:{sc}18;color:{sc};border:1px solid {sc}30">{r['sector']}</span></span>
+        <span style="font-family:IBM Plex Mono;font-size:.7rem;color:#2d3f5c">₹{r['mcap_cr']:,}Cr</span>
+    </div>"""
 
-        with col_btn:
-            if st.button("📊 Chart", key=f"btn_{r['symbol']}"):
-                st.session_state.selected_stock = r['symbol'] if selected != r['symbol'] else None
-                st.rerun()
-
-        # Expanded chart
-        if st.session_state.get("selected_stock") == r["symbol"]:
-            with st.container():
-                ticker_obj = yf.Ticker(f"{r['symbol']}.NS")
-                df_full    = ticker_obj.history(period="3mo", interval="1d")
-                if not df_full.empty:
-                    sh_list = [(pd.Timestamp(d, tz='UTC'), p) for d, p in r["all_swing_highs"]]
-                    sl_list = [(pd.Timestamp(d, tz='UTC'), p) for d, p in r["all_swing_lows"]]
-                    fig = make_candlestick_chart(r["symbol"], sh_list, sl_list)
-                    if fig:
-                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-                    # Mini stats row
-                    s1, s2, s3, s4 = st.columns(4)
-                    s1.metric("Current Close", f"₹{r['close']:,}", f"{r['day_chg']}%")
-                    s2.metric("Swing High", f"₹{r['swing_high']:,}", f"Broke +{r['breakout_pct']}%")
-                    s3.metric("Swing Low (Support)", f"₹{r['swing_low']:,}" if r['swing_low'] else "N/A")
-                    s4.metric("Volume Ratio", f"{r['vol_ratio']}x", "Confirmed ✅" if r['vol_confirmed'] else "Not confirmed ⚠️")
-            st.markdown("---")
-
-# ─────────────────────────────────────────────────────────────
-# FOOTER
-# ─────────────────────────────────────────────────────────────
 st.markdown(f"""
-<div style='text-align:center; padding:24px; color:#1e293b; font-size:0.72rem;
-            font-family:JetBrains Mono; margin-top:40px; border-top:1px solid #0f172a'>
-    NSE Swing Breakout Screener · Data via Yahoo Finance · Not financial advice<br>
-    {len(WATCHLIST)} stocks scanned · Refreshes every 15 min on re-run
+<div class="tbl-wrap">
+  <div class="tbl-header">
+    <span class="col-hdr">Symbol</span>
+    <span class="col-hdr">Signal</span>
+    <span class="col-hdr">Close</span>
+    <span class="col-hdr">Swing High</span>
+    <span class="col-hdr">Gap to High</span>
+    <span class="col-hdr">Volume</span>
+    <span class="col-hdr">Sector</span>
+    <span class="col-hdr">Mkt Cap</span>
+  </div>
+  <div class="scroll-body">{rows_html}</div>
 </div>
 """, unsafe_allow_html=True)
+
+# ── CHART ─────────────────────────────────────────────────────
+st.markdown('<div class="sec-head">Chart View</div>', unsafe_allow_html=True)
+
+sel_sym = st.selectbox("Pick a stock", [r["symbol"] for r in results], label_visibility="collapsed")
+
+if sel_sym:
+    sel = next(r for r in results if r["symbol"] == sel_sym)
+    try:
+        df_c = yf.Ticker(sel["full_sym"]).history(period="1y", interval="1d")
+
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            row_heights=[0.72, 0.28], vertical_spacing=0.02)
+
+        fig.add_trace(go.Candlestick(
+            x=df_c.index, open=df_c['Open'], high=df_c['High'],
+            low=df_c['Low'], close=df_c['Close'],
+            increasing_line_color='#4ade80', decreasing_line_color='#f87171',
+            increasing_fillcolor='#4ade80',  decreasing_fillcolor='#f87171',
+            name="Price", line_width=1,
+        ), row=1, col=1)
+
+        # Swing high horizontal line
+        fig.add_hline(y=sel["swing_high"], line_dash="dash", line_color="#fbbf24", line_width=1.5,
+            annotation_text=f"Swing High  ₹{sel['swing_high']:,}  ← {sel['gap_pct']}% away",
+            annotation_position="top left",
+            annotation_font=dict(color="#fbbf24", size=11, family="IBM Plex Mono"),
+            row=1, col=1)
+
+        if sel["swing_low"]:
+            fig.add_hline(y=sel["swing_low"], line_dash="dot", line_color="#60a5fa", line_width=1.2,
+                annotation_text=f"Swing Low  ₹{sel['swing_low']:,}",
+                annotation_position="bottom left",
+                annotation_font=dict(color="#60a5fa", size=11, family="IBM Plex Mono"),
+                row=1, col=1)
+
+        # Swing high markers
+        sh_d = [s[0] for s in sel["sh_list"]]
+        sh_p = [s[1] for s in sel["sh_list"]]
+        fig.add_trace(go.Scatter(x=sh_d, y=sh_p, mode='markers',
+            marker=dict(color='#fbbf24', size=8, symbol='triangle-down'),
+            name="Swing Highs"), row=1, col=1)
+
+        sl_d = [s[0] for s in sel["sl_list"]]
+        sl_p = [s[1] for s in sel["sl_list"]]
+        fig.add_trace(go.Scatter(x=sl_d, y=sl_p, mode='markers',
+            marker=dict(color='#60a5fa', size=8, symbol='triangle-up'),
+            name="Swing Lows"), row=1, col=1)
+
+        vol_c = ['#4ade8055' if c >= o else '#f8717155'
+                 for c, o in zip(df_c['Close'], df_c['Open'])]
+        fig.add_trace(go.Bar(x=df_c.index, y=df_c['Volume'],
+            marker_color=vol_c, showlegend=False), row=2, col=1)
+
+        avg_v = df_c['Volume'].rolling(20).mean()
+        fig.add_trace(go.Scatter(x=df_c.index, y=avg_v,
+            line=dict(color='#fbbf2450', width=1, dash='dot'),
+            showlegend=False), row=2, col=1)
+
+        fig.update_layout(
+            height=500, plot_bgcolor='#0a0f1e', paper_bgcolor='#0d1424',
+            font=dict(family='IBM Plex Mono', color='#4b5e7e', size=10),
+            xaxis_rangeslider_visible=False,
+            margin=dict(l=10, r=10, t=16, b=10),
+            legend=dict(orientation='h', y=1.02, x=0,
+                        font=dict(size=10), bgcolor='rgba(0,0,0,0)'),
+        )
+        fig.update_xaxes(gridcolor='#111827', zeroline=False)
+        fig.update_yaxes(gridcolor='#111827', zeroline=False)
+
+        st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        c1,c2,c3,c4,c5 = st.columns(5)
+        c1.metric("Close",        f"₹{sel['close']:,}",       f"{sel['day_chg']}% today")
+        c2.metric("Swing High",   f"₹{sel['swing_high']:,}",  f"Set {sel['sh_date']}")
+        c3.metric("Gap to High",  f"{sel['gap_pct']}%",        sel["signal"])
+        c4.metric("Swing Low",    f"₹{sel['swing_low']:,}" if sel['swing_low'] else "—")
+        c5.metric("Volume",       f"{sel['vol_ratio']}x",      "Building ↑" if sel['vol_ok'] else "Normal")
+
+    except Exception as e:
+        st.error(f"Chart error: {e}")
+
+st.markdown("""
+<div style='text-align:center;margin-top:48px;padding-top:18px;border-top:1px solid #0d1424;
+            font-size:0.62rem;color:#0f1825;font-family:IBM Plex Mono'>
+    NSE Breakout Watch · Yahoo Finance · 2Y daily · Not financial advice
+</div>""", unsafe_allow_html=True)
