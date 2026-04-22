@@ -5,7 +5,25 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
+# Define the custom CSS
+hide_streamlit_style = """
+<style>
+/* Hides the top-right menu */
+#MainMenu {visibility: hidden;}
 
+/* Hides the 'Made with Streamlit' footer */
+footer {visibility: hidden;}
+
+/* Hides the top header line completely */
+header {visibility: hidden;}
+
+/* Hides the 'Deploy' button specifically */
+.stDeployButton {display:none;}
+</style>
+"""
+
+# Inject the CSS into the Streamlit app
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 st.set_page_config(
     page_title="NSE Breakout Watch",
     page_icon="🎯",
