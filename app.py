@@ -199,50 +199,58 @@ def find_swings(df, lookback=5, min_swing_pct=1.5):
     return sh, sl
 
 
-def check_approaching(df, swing_highs, threshold_pct, vol_mult):
+def check_approaching(df, swing_highs, threshold_pct, vol_mult, min_sh_age_days=20):
     """
-    Finds the nearest unbroken swing high above current price.
-    Adds a 50MA filter: skips stocks in a clear downtrend (price > 3% below 50MA).
+    Rules for a VALID pre-breakout setup:
+    1. Swing high must be at least min_sh_age_days old (not a fresh minor bounce)
+    2. Swing high must be the highest point in the last 60 days (real resistance)
+    3. Price must be above its 50MA (uptrend, not a dead-cat bounce in downtrend)
+    4. Price must be within threshold_pct% below that swing high
     """
     if not swing_highs:
         return False, None, None, False, 0
+
     close    = float(df['Close'].iloc[-1])
     vol_now  = float(df['Volume'].iloc[-1])
     vol_avg  = float(df['Volume'].iloc[-21:-1].mean())
     vol_ratio= round(vol_now / vol_avg, 2) if vol_avg > 0 else 0
-    # Walk backwards to find nearest swing high still above close
-    valid_sh = None
-    for date, price in reversed(swing_highs):
-        if price > close:
-            valid_sh = price
-            break
-    if valid_sh is None:
-        return False, None, None, False, 0
-    gap_pct = round((valid_sh - close) / valid_sh * 100, 2)
-    if gap_pct > threshold_pct:
-        return False, None, None, False, 0
-    # Uptrend filter: close must be within 3% of 50MA (not in downtrend)
+    today    = df.index[-1]
+
+    # Filter 1: Uptrend — price must be above 50MA
     if len(df) >= 50:
         ma50 = float(df['Close'].iloc[-50:].mean())
         if close < ma50 * 0.97:
             return False, None, None, False, 0
+
+    # Filter 2: Find swing highs that are:
+    #   a) above current close
+    #   b) at least min_sh_age_days old (not a recent minor bounce)
+    #   c) the highest point in last 60 candles (meaningful resistance)
+    high_60d = float(df['High'].iloc[-60:].max()) if len(df) >= 60 else float(df['High'].max())
+
+    valid_sh   = None
+    valid_date = None
+    for date, price in reversed(swing_highs):
+        age_days = (today - date).days
+        if price <= close:
+            continue
+        if age_days < min_sh_age_days:          # too recent — skip minor bounces
+            continue
+        # Must be within 10% of the 60-day high (real resistance, not a distant old high)
+        if price < high_60d * 0.90:
+            continue
+        valid_sh   = price
+        valid_date = date
+        break
+
+    if valid_sh is None:
+        return False, None, None, False, 0
+
+    gap_pct = round((valid_sh - close) / valid_sh * 100, 2)
+    if gap_pct > threshold_pct:
+        return False, None, None, False, 0
+
     return True, valid_sh, gap_pct, vol_ratio >= vol_mult, vol_ratio
-
-
-def check_approaching(df, swing_highs, threshold_pct, vol_mult):
-    if not swing_highs:
-        return False, None, None, False, 0
-    _, last_sh = swing_highs[-1]
-    close    = float(df['Close'].iloc[-1])
-    vol_now  = float(df['Volume'].iloc[-1])
-    vol_avg  = float(df['Volume'].iloc[-21:-1].mean())
-    vol_ratio= round(vol_now / vol_avg, 2) if vol_avg > 0 else 0
-    if close >= last_sh:          # already broken out — skip
-        return False, None, None, False, 0
-    gap_pct = round((last_sh - close) / last_sh * 100, 2)
-    if gap_pct > threshold_pct:   # too far away — skip
-        return False, None, None, False, 0
-    return True, last_sh, gap_pct, vol_ratio >= vol_mult, vol_ratio
 
 
 @st.cache_data(ttl=900, show_spinner=False)
