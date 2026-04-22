@@ -5,25 +5,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
-# Define the custom CSS
-hide_streamlit_style = """
-<style>
-/* Hides the top-right menu */
-#MainMenu {visibility: hidden;}
 
-/* Hides the 'Made with Streamlit' footer */
-footer {visibility: hidden;}
-
-/* Hides the top header line completely */
-header {visibility: hidden;}
-
-/* Hides the 'Deploy' button specifically */
-.stDeployButton {display:none;}
-</style>
-"""
-
-# Inject the CSS into the Streamlit app
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 st.set_page_config(
     page_title="NSE Breakout Watch",
     page_icon="🎯",
@@ -127,6 +109,11 @@ WATCHLIST = [
     "TATAPOWER.NS","ADANIGREEN.NS","NAUKRI.NS","INDIGO.NS","OFSS.NS",
     "DIXON.NS","TATACONSUM.NS","MOTHERSON.NS","BALKRISIND.NS","DMART.NS",
     "ABCAPITAL.NS","MFSL.NS","SBICARD.NS","HDFCAMC.NS","NIPPONLIFE.NS",
+    "ANGELONE.NS","ICICIPRULI.NS","HDFCLIFE.NS","360ONE.NS","MOTILALOFS.NS",
+    "ICICIGI.NS","STARHEALTH.NS","NUVAMA.NS","HAL.NS","BEL.NS","BHEL.NS",
+    "COCHINSHIP.NS","CGPOWER.NS","SIEMENS.NS","ABB.NS","CUMMINSIND.NS",
+    "THERMAX.NS","TRENT.NS","KALYANKJIL.NS","VBL.NS","KPITTECH.NS",
+    "SUPREMEIND.NS","GRINDWELL.NS","TIMKEN.NS","SCHAEFFLER.NS",
 ]
 
 SECTOR_MAP = {
@@ -156,24 +143,73 @@ SECTOR_MAP = {
     "DIXON.NS":"Consumer","TATACONSUM.NS":"FMCG","MOTHERSON.NS":"Auto",
     "BALKRISIND.NS":"Auto","DMART.NS":"Consumer","ABCAPITAL.NS":"Finance",
     "MFSL.NS":"Finance","SBICARD.NS":"Finance","HDFCAMC.NS":"Finance","NIPPONLIFE.NS":"Finance",
+    "ANGELONE.NS":"Finance","ICICIPRULI.NS":"Finance","HDFCLIFE.NS":"Finance",
+    "360ONE.NS":"Finance","MOTILALOFS.NS":"Finance","ICICIGI.NS":"Finance",
+    "STARHEALTH.NS":"Finance","NUVAMA.NS":"Finance",
+    "HAL.NS":"Defence","BEL.NS":"Defence","BHEL.NS":"Infra","COCHINSHIP.NS":"Defence",
+    "CGPOWER.NS":"Capital Goods","SIEMENS.NS":"Capital Goods","ABB.NS":"Capital Goods",
+    "CUMMINSIND.NS":"Capital Goods","THERMAX.NS":"Capital Goods",
+    "TRENT.NS":"Consumer","KALYANKJIL.NS":"Consumer","VBL.NS":"FMCG",
+    "KPITTECH.NS":"IT","SUPREMEIND.NS":"Consumer","GRINDWELL.NS":"Capital Goods",
+    "TIMKEN.NS":"Capital Goods","SCHAEFFLER.NS":"Capital Goods",
 }
 
 SECTOR_COLORS = {
     "Banking":"#3b82f6","IT":"#a78bfa","FMCG":"#fb923c","Finance":"#34d399",
     "Energy":"#f87171","Infra":"#22d3ee","Auto":"#f97316","Pharma":"#f472b6",
-    "Consumer":"#a3e635","Metal":"#94a3b8","Cement":"#fbbf24","Telecom":"#38bdf8",
+    "Consumer":"#a3e635","Metal":"#94a3b8","Cement":"#fbbf24","Telecom":"#38bdf8","Defence":"#e879f9","Capital Goods":"#67e8f9",
 }
 
 # ── LOGIC ─────────────────────────────────────────────────────
-def find_swings(df, lookback=5):
+def find_swings(df, lookback=5, min_swing_pct=1.5):
+    """
+    min_swing_pct: swing high must be at least X% above the average of
+    surrounding candles. Filters out minor bounces inside downtrends.
+    """
     highs, lows, n = df['High'].values, df['Low'].values, len(df)
     sh, sl = [], []
     for i in range(lookback, n - lookback):
-        if highs[i] == max(highs[i-lookback:i+lookback+1]):
-            sh.append((df.index[i], round(float(highs[i]), 2)))
-        if lows[i] == min(lows[i-lookback:i+lookback+1]):
-            sl.append((df.index[i], round(float(lows[i]), 2)))
+        window_h = highs[i-lookback:i+lookback+1]
+        window_l = lows[i-lookback:i+lookback+1]
+        if highs[i] == max(window_h):
+            avg_surr = (sum(window_h) - highs[i]) / (len(window_h) - 1)
+            if (highs[i] - avg_surr) / avg_surr * 100 >= min_swing_pct:
+                sh.append((df.index[i], round(float(highs[i]), 2)))
+        if lows[i] == min(window_l):
+            avg_surr = (sum(window_l) - lows[i]) / (len(window_l) - 1)
+            if (avg_surr - lows[i]) / avg_surr * 100 >= min_swing_pct:
+                sl.append((df.index[i], round(float(lows[i]), 2)))
     return sh, sl
+
+
+def check_approaching(df, swing_highs, threshold_pct, vol_mult):
+    """
+    Finds the nearest unbroken swing high above current price.
+    Adds a 50MA filter: skips stocks in a clear downtrend (price > 3% below 50MA).
+    """
+    if not swing_highs:
+        return False, None, None, False, 0
+    close    = float(df['Close'].iloc[-1])
+    vol_now  = float(df['Volume'].iloc[-1])
+    vol_avg  = float(df['Volume'].iloc[-21:-1].mean())
+    vol_ratio= round(vol_now / vol_avg, 2) if vol_avg > 0 else 0
+    # Walk backwards to find nearest swing high still above close
+    valid_sh = None
+    for date, price in reversed(swing_highs):
+        if price > close:
+            valid_sh = price
+            break
+    if valid_sh is None:
+        return False, None, None, False, 0
+    gap_pct = round((valid_sh - close) / valid_sh * 100, 2)
+    if gap_pct > threshold_pct:
+        return False, None, None, False, 0
+    # Uptrend filter: close must be within 3% of 50MA (not in downtrend)
+    if len(df) >= 50:
+        ma50 = float(df['Close'].iloc[-50:].mean())
+        if close < ma50 * 0.97:
+            return False, None, None, False, 0
+    return True, valid_sh, gap_pct, vol_ratio >= vol_mult, vol_ratio
 
 
 def check_approaching(df, swing_highs, threshold_pct, vol_mult):
@@ -235,6 +271,94 @@ def run_screener(lookback, vol_mult, min_mcap, threshold):
     return sorted(results, key=lambda x: (order[x["signal"]], x["gap_pct"]))
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def run_recent_breakouts(lookback, vol_mult, min_mcap, days_back=5):
+    """
+    Finds stocks that broke above their swing high within the last `days_back` candles.
+    These are confirmed breakouts — like Angel One today.
+    """
+    results = []
+    for sym in WATCHLIST:
+        try:
+            t  = yf.Ticker(sym)
+            df = t.history(period="2y", interval="1d")
+            if df.empty or len(df) < lookback * 2 + 20:
+                continue
+            mcap_cr = (getattr(t.fast_info, "market_cap", 0) or 0) / 1e7
+            if mcap_cr < min_mcap:
+                continue
+            sh, sl = find_swings(df, lookback)
+            if not sh:
+                continue
+
+            close     = float(df['Close'].iloc[-1])
+            prev_close= float(df['Close'].iloc[-2])
+            day_chg   = round((close - prev_close) / prev_close * 100, 2)
+            vol_now   = float(df['Volume'].iloc[-1])
+            vol_avg   = float(df['Volume'].iloc[-21:-1].mean())
+            vol_ratio = round(vol_now / vol_avg, 2) if vol_avg > 0 else 0
+
+            # Look through recent candles to find if a breakout happened
+            breakout_day  = None
+            breakout_price= None
+            broken_sh     = None
+
+            for days_ago in range(1, days_back + 1):
+                idx = -days_ago
+                candle_close = float(df['Close'].iloc[idx])
+                candle_date  = df.index[idx]
+
+                # Find the most recent swing high that existed BEFORE this candle
+                # and that this candle closed above
+                prior_sh = [p for d, p in sh if d < candle_date]
+                if not prior_sh:
+                    continue
+                nearest_sh = max(p for p in prior_sh if p < candle_close * 1.05)  # within 5%
+
+                if nearest_sh and candle_close > nearest_sh:
+                    # Check previous candle was below (fresh breakout)
+                    prev_candle = float(df['Close'].iloc[idx - 1])
+                    if prev_candle <= nearest_sh:
+                        breakout_day   = days_ago
+                        breakout_price = nearest_sh
+                        broken_sh      = nearest_sh
+                        break
+
+            if breakout_day is None:
+                continue
+
+            # Uptrend filter: must be above 50MA
+            if len(df) >= 50:
+                ma50 = float(df['Close'].iloc[-50:].mean())
+                if close < ma50 * 0.95:
+                    continue
+
+            bo_pct = round((close - broken_sh) / broken_sh * 100, 2)
+            label  = "TODAY" if breakout_day == 1 else f"{breakout_day}D AGO"
+
+            results.append({
+                "symbol"      : sym.replace(".NS",""),
+                "full_sym"    : sym,
+                "close"       : close,
+                "day_chg"     : day_chg,
+                "broken_sh"   : broken_sh,
+                "bo_pct"      : bo_pct,
+                "days_ago"    : breakout_day,
+                "label"       : label,
+                "swing_low"   : sl[-1][1] if sl else None,
+                "vol_ratio"   : vol_ratio,
+                "vol_ok"      : vol_ratio >= vol_mult,
+                "mcap_cr"     : round(mcap_cr),
+                "sector"      : SECTOR_MAP.get(sym, "Other"),
+                "sh_list"     : [(d.strftime("%Y-%m-%d"), p) for d, p in sh[-8:]],
+                "sl_list"     : [(d.strftime("%Y-%m-%d"), p) for d, p in sl[-8:]],
+            })
+        except:
+            continue
+    return sorted(results, key=lambda x: (x["days_ago"], -x["bo_pct"]))
+
+
+
 # ── SIDEBAR ───────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
@@ -257,6 +381,9 @@ with st.sidebar:
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
     run_btn = st.button("🔍  Scan Now")
 
+    days_back = st.slider("Recent breakout window (days)", 1, 10, 5, 1,
+        help="How many days back to scan for confirmed breakouts")
+
     st.markdown("""
     <div style='margin-top:24px; padding:14px; background:#080d1a;
                 border:1px solid #1a2540; border-radius:8px; font-size:0.72rem; line-height:2.1'>
@@ -269,7 +396,11 @@ with st.sidebar:
         <span style='color:#60a5fa; font-weight:700'>CLOSE</span>
         <span style='color:#2d3f5c'> — 1.2 – 2% below</span><br>
         <span style='color:#34d399'>↑ Vol</span>
-        <span style='color:#2d3f5c'> — volume building up</span>
+        <span style='color:#2d3f5c'> — volume building up</span><br>
+        <span style='color:#e879f9; font-weight:700'>TODAY</span>
+        <span style='color:#2d3f5c'> — broke out today</span><br>
+        <span style='color:#fb923c; font-weight:700'>Xd AGO</span>
+        <span style='color:#2d3f5c'> — broke out X days back</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -287,12 +418,13 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── SESSION STATE ─────────────────────────────────────────────
-if "results" not in st.session_state:
-    st.session_state.results = None
+if "results"   not in st.session_state: st.session_state.results   = None
+if "breakouts" not in st.session_state: st.session_state.breakouts = None
 
 if run_btn:
-    with st.spinner("Scanning 90 stocks · 2Y daily data · this takes ~90 sec…"):
-        st.session_state.results = run_screener(lookback, vol_mult, min_mcap, threshold)
+    with st.spinner("Scanning stocks · 2Y daily data · this takes ~90 sec…"):
+        st.session_state.results   = run_screener(lookback, vol_mult, min_mcap, threshold)
+        st.session_state.breakouts = run_recent_breakouts(lookback, vol_mult, min_mcap, days_back)
 
 if st.session_state.results is None:
     st.markdown("""
@@ -302,111 +434,29 @@ if st.session_state.results is None:
             Configure parameters and click Scan Now
         </div>
         <div style='color:#0f1825; font-size:0.8rem; margin-top:6px'>
-            Finds stocks that are close to — but have NOT yet broken — their swing high
+            Tab 1: Stocks approaching swing high &nbsp;·&nbsp; Tab 2: Recent confirmed breakouts
         </div>
     </div>
     """, unsafe_allow_html=True)
     st.stop()
 
-results = st.session_state.results
-if vol_only:
+# ── TABS ──────────────────────────────────────────────────────
+tab1, tab2 = st.tabs(["🎯  Approaching Breakout", "🚀  Recent Breakouts"])
+
+# ════════════════════════════════════════════════════════════
+# TAB 1 — Approaching
+# ════════════════════════════════════════════════════════════
+with tab1:
+ results = st.session_state.results
+ if vol_only:
     results = [r for r in results if r["vol_ok"]]
 
-# ── KPIs ──────────────────────────────────────────────────────
-total  = len(results)
-hot    = sum(1 for r in results if r["signal"] == "HOT")
-warm   = sum(1 for r in results if r["signal"] == "WARM")
-vol_b  = sum(1 for r in results if r["vol_ok"])
-avg_gap= round(sum(r["gap_pct"] for r in results) / total, 2) if total else 0
-
-st.markdown(f"""
-<div class="kpi-row">
-    <div class="kpi"><div class="kpi-val" style="color:#60a5fa">{total}</div>
-        <div class="kpi-lbl">Setups Found</div></div>
-    <div class="kpi"><div class="kpi-val" style="color:#4ade80">{hot}</div>
-        <div class="kpi-lbl">Hot &lt;0.5%</div></div>
-    <div class="kpi"><div class="kpi-val" style="color:#fbbf24">{warm}</div>
-        <div class="kpi-lbl">Warm &lt;1.2%</div></div>
-    <div class="kpi"><div class="kpi-val" style="color:#34d399">{vol_b}</div>
-        <div class="kpi-lbl">Vol Building</div></div>
-    <div class="kpi"><div class="kpi-val" style="color:#a78bfa">{avg_gap}%</div>
-        <div class="kpi-lbl">Avg Gap</div></div>
-</div>
-""", unsafe_allow_html=True)
-
-# ── TABLE ─────────────────────────────────────────────────────
-st.markdown('<div class="sec-head">Pre-Breakout Setups</div>', unsafe_allow_html=True)
-
-if not results:
-    st.markdown("""
-    <div style='text-align:center; padding:50px; color:#1f2d47'>
-        No setups match. Try raising the gap threshold or lowering market cap.
-    </div>""", unsafe_allow_html=True)
-    st.stop()
-
-rows_html = ""
-for r in results:
-    sc      = SECTOR_COLORS.get(r["sector"], "#64748b")
-    dc      = "#4ade80" if r["day_chg"] >= 0 else "#f87171"
-    pcls    = {"HOT":"pill-hot","WARM":"pill-warm","CLOSE":"pill-cool"}[r["signal"]]
-    plbl    = {"HOT":"🔴 HOT","WARM":"🟡 WARM","CLOSE":"🔵 CLOSE"}[r["signal"]]
-    prox    = round((1 - r["gap_pct"] / threshold) * 100)
-    pcol    = "#4ade80" if r["signal"]=="HOT" else "#fbbf24" if r["signal"]=="WARM" else "#60a5fa"
-    vc      = "#34d399" if r["vol_ok"] else "#2d3f5c"
-    vlbl    = f"{'↑ ' if r['vol_ok'] else ''}{r['vol_ratio']}x"
-
-    rows_html += f"""
-    <div class="tbl-row">
-        <span class="sym">{r['symbol']}</span>
-        <span><span class="pill {pcls}">{plbl}</span></span>
-        <span class="mono">₹{r['close']:,}
-            <span style="font-size:.65rem;color:{dc}"> {'+' if r['day_chg']>=0 else ''}{r['day_chg']}%</span>
-        </span>
-        <span class="mono">₹{r['swing_high']:,}
-            <span style="display:block;font-size:.6rem;color:#2d3f5c">{r['sh_date']}</span>
-        </span>
-        <span>
-            <div class="prox-wrap">
-                <div class="prox-bg">
-                    <div class="prox-fill" style="width:{prox}%;background:{pcol};box-shadow:0 0 5px {pcol}50"></div>
-                </div>
-                <span style="font-family:IBM Plex Mono;font-size:.75rem;color:{pcol};min-width:38px">{r['gap_pct']}%</span>
-            </div>
-        </span>
-        <span style="font-family:IBM Plex Mono;font-size:.78rem;color:{vc}">{vlbl}</span>
-        <span><span class="sec-badge" style="background:{sc}18;color:{sc};border:1px solid {sc}30">{r['sector']}</span></span>
-        <span style="font-family:IBM Plex Mono;font-size:.7rem;color:#2d3f5c">₹{r['mcap_cr']:,}Cr</span>
-    </div>"""
-
-st.markdown(f"""
-<div class="tbl-wrap">
-  <div class="tbl-header">
-    <span class="col-hdr">Symbol</span>
-    <span class="col-hdr">Signal</span>
-    <span class="col-hdr">Close</span>
-    <span class="col-hdr">Swing High</span>
-    <span class="col-hdr">Gap to High</span>
-    <span class="col-hdr">Volume</span>
-    <span class="col-hdr">Sector</span>
-    <span class="col-hdr">Mkt Cap</span>
-  </div>
-  <div class="scroll-body">{rows_html}</div>
-</div>
-""", unsafe_allow_html=True)
-
-# ── CHART ─────────────────────────────────────────────────────
-st.markdown('<div class="sec-head">Chart View</div>', unsafe_allow_html=True)
-
-sel_sym = st.selectbox("Pick a stock", [r["symbol"] for r in results], label_visibility="collapsed")
-
-if sel_sym:
-    sel = next(r for r in results if r["symbol"] == sel_sym)
+# helper to render a candlestick chart for any stock dict
+def render_chart(sel, key_prefix=""):
     try:
         df_c = yf.Ticker(sel["full_sym"]).history(period="1y", interval="1d")
-
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                            row_heights=[0.72, 0.28], vertical_spacing=0.02)
-
+        fig  = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                             row_heights=[0.72, 0.28], vertical_spacing=0.02)
         fig.add_trace(go.Candlestick(
             x=df_c.index, open=df_c['Open'], high=df_c['High'],
             low=df_c['Low'], close=df_c['Close'],
@@ -415,67 +465,214 @@ if sel_sym:
             name="Price", line_width=1,
         ), row=1, col=1)
 
-        # Swing high horizontal line
-        fig.add_hline(y=sel["swing_high"], line_dash="dash", line_color="#fbbf24", line_width=1.5,
-            annotation_text=f"Swing High  ₹{sel['swing_high']:,}  ← {sel['gap_pct']}% away",
-            annotation_position="top left",
-            annotation_font=dict(color="#fbbf24", size=11, family="IBM Plex Mono"),
-            row=1, col=1)
+        sh_level = sel.get("swing_high") or sel.get("broken_sh")
+        if sh_level:
+            label = f"Swing High  ₹{sh_level:,}"
+            if sel.get("gap_pct"):
+                label += f"  ← {sel['gap_pct']}% away"
+            elif sel.get("bo_pct"):
+                label += f"  ↑ broke +{sel['bo_pct']}%"
+            fig.add_hline(y=sh_level, line_dash="dash", line_color="#fbbf24", line_width=1.5,
+                annotation_text=label, annotation_position="top left",
+                annotation_font=dict(color="#fbbf24", size=11, family="IBM Plex Mono"),
+                row=1, col=1)
 
-        if sel["swing_low"]:
+        if sel.get("swing_low"):
             fig.add_hline(y=sel["swing_low"], line_dash="dot", line_color="#60a5fa", line_width=1.2,
                 annotation_text=f"Swing Low  ₹{sel['swing_low']:,}",
                 annotation_position="bottom left",
                 annotation_font=dict(color="#60a5fa", size=11, family="IBM Plex Mono"),
                 row=1, col=1)
 
-        # Swing high markers
-        sh_d = [s[0] for s in sel["sh_list"]]
-        sh_p = [s[1] for s in sel["sh_list"]]
+        sh_d = [s[0] for s in sel["sh_list"]]; sh_p = [s[1] for s in sel["sh_list"]]
+        sl_d = [s[0] for s in sel["sl_list"]]; sl_p = [s[1] for s in sel["sl_list"]]
         fig.add_trace(go.Scatter(x=sh_d, y=sh_p, mode='markers',
-            marker=dict(color='#fbbf24', size=8, symbol='triangle-down'),
-            name="Swing Highs"), row=1, col=1)
-
-        sl_d = [s[0] for s in sel["sl_list"]]
-        sl_p = [s[1] for s in sel["sl_list"]]
+            marker=dict(color='#fbbf24', size=8, symbol='triangle-down'), name="Swing Highs"), row=1, col=1)
         fig.add_trace(go.Scatter(x=sl_d, y=sl_p, mode='markers',
-            marker=dict(color='#60a5fa', size=8, symbol='triangle-up'),
-            name="Swing Lows"), row=1, col=1)
+            marker=dict(color='#60a5fa', size=8, symbol='triangle-up'),  name="Swing Lows"),  row=1, col=1)
 
         vol_c = ['rgba(74,222,128,0.33)' if c >= o else 'rgba(248,113,113,0.33)'
                  for c, o in zip(df_c['Close'], df_c['Open'])]
-        fig.add_trace(go.Bar(x=df_c.index, y=df_c['Volume'],
-            marker_color=vol_c, showlegend=False), row=2, col=1)
-
+        fig.add_trace(go.Bar(x=df_c.index, y=df_c['Volume'], marker_color=vol_c, showlegend=False), row=2, col=1)
         avg_v = df_c['Volume'].rolling(20).mean()
         fig.add_trace(go.Scatter(x=df_c.index, y=avg_v,
-            line=dict(color='rgba(251,191,36,0.31)', width=1, dash='dot'),
-            showlegend=False), row=2, col=1)
+            line=dict(color='rgba(251,191,36,0.31)', width=1, dash='dot'), showlegend=False), row=2, col=1)
 
-        fig.update_layout(
-            height=500, plot_bgcolor='#0a0f1e', paper_bgcolor='#0d1424',
+        fig.update_layout(height=500, plot_bgcolor='#0a0f1e', paper_bgcolor='#0d1424',
             font=dict(family='IBM Plex Mono', color='#4b5e7e', size=10),
-            xaxis_rangeslider_visible=False,
-            margin=dict(l=10, r=10, t=16, b=10),
-            legend=dict(orientation='h', y=1.02, x=0,
-                        font=dict(size=10), bgcolor='rgba(0,0,0,0)'),
-        )
+            xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=16, b=10),
+            legend=dict(orientation='h', y=1.02, x=0, font=dict(size=10), bgcolor='rgba(0,0,0,0)'))
         fig.update_xaxes(gridcolor='#111827', zeroline=False)
         fig.update_yaxes(gridcolor='#111827', zeroline=False)
 
         st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         st.markdown('</div>', unsafe_allow_html=True)
-
-        c1,c2,c3,c4,c5 = st.columns(5)
-        c1.metric("Close",        f"₹{sel['close']:,}",       f"{sel['day_chg']}% today")
-        c2.metric("Swing High",   f"₹{sel['swing_high']:,}",  f"Set {sel['sh_date']}")
-        c3.metric("Gap to High",  f"{sel['gap_pct']}%",        sel["signal"])
-        c4.metric("Swing Low",    f"₹{sel['swing_low']:,}" if sel['swing_low'] else "—")
-        c5.metric("Volume",       f"{sel['vol_ratio']}x",      "Building ↑" if sel['vol_ok'] else "Normal")
-
     except Exception as e:
         st.error(f"Chart error: {e}")
+
+
+# ════════════════════════════════════════════════════════════
+# TAB 1 — Approaching Breakout
+# ════════════════════════════════════════════════════════════
+with tab1:
+    results = st.session_state.results
+    if vol_only:
+        results = [r for r in results if r["vol_ok"]]
+
+    total   = len(results)
+    hot     = sum(1 for r in results if r["signal"] == "HOT")
+    warm    = sum(1 for r in results if r["signal"] == "WARM")
+    vol_b   = sum(1 for r in results if r["vol_ok"])
+    avg_gap = round(sum(r["gap_pct"] for r in results) / total, 2) if total else 0
+
+    st.markdown(f"""
+    <div class="kpi-row">
+        <div class="kpi"><div class="kpi-val" style="color:#60a5fa">{total}</div>
+            <div class="kpi-lbl">Setups Found</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:#4ade80">{hot}</div>
+            <div class="kpi-lbl">Hot &lt;0.5%</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:#fbbf24">{warm}</div>
+            <div class="kpi-lbl">Warm &lt;1.2%</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:#34d399">{vol_b}</div>
+            <div class="kpi-lbl">Vol Building</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:#a78bfa">{avg_gap}%</div>
+            <div class="kpi-lbl">Avg Gap</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="sec-head">Pre-Breakout Setups</div>', unsafe_allow_html=True)
+
+    if not results:
+        st.markdown("""<div style='text-align:center;padding:50px;color:#1f2d47'>
+            No setups match. Try raising the gap threshold.</div>""", unsafe_allow_html=True)
+    else:
+        rows_html = ""
+        for r in results:
+            sc   = SECTOR_COLORS.get(r["sector"], "#64748b")
+            dc   = "#4ade80" if r["day_chg"] >= 0 else "#f87171"
+            pcls = {"HOT":"pill-hot","WARM":"pill-warm","CLOSE":"pill-cool"}[r["signal"]]
+            plbl = {"HOT":"🔴 HOT","WARM":"🟡 WARM","CLOSE":"🔵 CLOSE"}[r["signal"]]
+            prox = round((1 - r["gap_pct"] / threshold) * 100)
+            pcol = "#4ade80" if r["signal"]=="HOT" else "#fbbf24" if r["signal"]=="WARM" else "#60a5fa"
+            vc   = "#34d399" if r["vol_ok"] else "#2d3f5c"
+            vlbl = f"{'↑ ' if r['vol_ok'] else ''}{r['vol_ratio']}x"
+            rows_html += f"""
+            <div class="tbl-row">
+                <span class="sym">{r['symbol']}</span>
+                <span><span class="pill {pcls}">{plbl}</span></span>
+                <span class="mono">₹{r['close']:,}<span style="font-size:.65rem;color:{dc}"> {'+' if r['day_chg']>=0 else ''}{r['day_chg']}%</span></span>
+                <span class="mono">₹{r['swing_high']:,}<span style="display:block;font-size:.6rem;color:#2d3f5c">{r['sh_date']}</span></span>
+                <span><div class="prox-wrap"><div class="prox-bg"><div class="prox-fill" style="width:{prox}%;background:{pcol};box-shadow:0 0 5px {pcol}50"></div></div>
+                <span style="font-family:IBM Plex Mono;font-size:.75rem;color:{pcol};min-width:38px">{r['gap_pct']}%</span></div></span>
+                <span style="font-family:IBM Plex Mono;font-size:.78rem;color:{vc}">{vlbl}</span>
+                <span><span class="sec-badge" style="background:{sc}18;color:{sc};border:1px solid {sc}30">{r['sector']}</span></span>
+                <span style="font-family:IBM Plex Mono;font-size:.7rem;color:#2d3f5c">₹{r['mcap_cr']:,}Cr</span>
+            </div>"""
+
+        st.markdown(f"""
+        <div class="tbl-wrap">
+          <div class="tbl-header">
+            <span class="col-hdr">Symbol</span><span class="col-hdr">Signal</span>
+            <span class="col-hdr">Close</span><span class="col-hdr">Swing High</span>
+            <span class="col-hdr">Gap to High</span><span class="col-hdr">Volume</span>
+            <span class="col-hdr">Sector</span><span class="col-hdr">Mkt Cap</span>
+          </div>
+          <div class="scroll-body">{rows_html}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown('<div class="sec-head">Chart View</div>', unsafe_allow_html=True)
+        sel1 = st.selectbox("Pick a stock", [r["symbol"] for r in results],
+                            key="sel_tab1", label_visibility="collapsed")
+        if sel1:
+            s = next(r for r in results if r["symbol"] == sel1)
+            render_chart(s, "t1")
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.metric("Close",       f"₹{s['close']:,}",        f"{s['day_chg']}% today")
+            c2.metric("Swing High",  f"₹{s['swing_high']:,}",   f"Set {s['sh_date']}")
+            c3.metric("Gap to High", f"{s['gap_pct']}%",          s["signal"])
+            c4.metric("Swing Low",   f"₹{s['swing_low']:,}" if s['swing_low'] else "—")
+            c5.metric("Volume",      f"{s['vol_ratio']}x",        "Building ↑" if s['vol_ok'] else "Normal")
+
+
+# ════════════════════════════════════════════════════════════
+# TAB 2 — Recent Breakouts
+# ════════════════════════════════════════════════════════════
+with tab2:
+    bos = st.session_state.breakouts or []
+
+    total_b  = len(bos)
+    today_b  = sum(1 for b in bos if b["days_ago"] == 1)
+    vol_b2   = sum(1 for b in bos if b["vol_ok"])
+    avg_bo   = round(sum(b["bo_pct"] for b in bos) / total_b, 2) if total_b else 0
+
+    st.markdown(f"""
+    <div class="kpi-row">
+        <div class="kpi"><div class="kpi-val" style="color:#e879f9">{total_b}</div>
+            <div class="kpi-lbl">Recent Breakouts</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:#4ade80">{today_b}</div>
+            <div class="kpi-lbl">Today</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:#fb923c">{total_b - today_b}</div>
+            <div class="kpi-lbl">Last {days_back} Days</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:#34d399">{vol_b2}</div>
+            <div class="kpi-lbl">Vol Confirmed</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:#a78bfa">+{avg_bo}%</div>
+            <div class="kpi-lbl">Avg Breakout</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="sec-head">Confirmed Breakouts</div>', unsafe_allow_html=True)
+
+    if not bos:
+        st.markdown("""<div style='text-align:center;padding:50px;color:#1f2d47'>
+            No recent breakouts found. Try increasing the breakout window in the sidebar.</div>""",
+            unsafe_allow_html=True)
+    else:
+        bo_rows = ""
+        for b in bos:
+            sc   = SECTOR_COLORS.get(b["sector"], "#64748b")
+            dc   = "#4ade80" if b["day_chg"] >= 0 else "#f87171"
+            vc   = "#34d399" if b["vol_ok"] else "#2d3f5c"
+            vlbl = f"{'↑ ' if b['vol_ok'] else ''}{b['vol_ratio']}x"
+            day_col  = "#4ade80" if b["days_ago"] == 1 else "#fb923c"
+            day_pill = f"pill-hot" if b["days_ago"] == 1 else "pill-warm"
+            bo_rows += f"""
+            <div class="tbl-row">
+                <span class="sym">{b['symbol']}</span>
+                <span><span class="pill {day_pill}">{b['label']}</span></span>
+                <span class="mono">₹{b['close']:,}<span style="font-size:.65rem;color:{dc}"> {'+' if b['day_chg']>=0 else ''}{b['day_chg']}%</span></span>
+                <span class="mono">₹{b['broken_sh']:,}<span style="display:block;font-size:.6rem;color:#2d3f5c">resistance broken</span></span>
+                <span style="font-family:IBM Plex Mono;font-size:.85rem;color:#4ade80;font-weight:600">+{b['bo_pct']}%</span>
+                <span style="font-family:IBM Plex Mono;font-size:.78rem;color:{vc}">{vlbl}</span>
+                <span><span class="sec-badge" style="background:{sc}18;color:{sc};border:1px solid {sc}30">{b['sector']}</span></span>
+                <span style="font-family:IBM Plex Mono;font-size:.7rem;color:#2d3f5c">₹{b['mcap_cr']:,}Cr</span>
+            </div>"""
+
+        st.markdown(f"""
+        <div class="tbl-wrap">
+          <div class="tbl-header">
+            <span class="col-hdr">Symbol</span><span class="col-hdr">When</span>
+            <span class="col-hdr">Close</span><span class="col-hdr">Broken Level</span>
+            <span class="col-hdr">Breakout %</span><span class="col-hdr">Volume</span>
+            <span class="col-hdr">Sector</span><span class="col-hdr">Mkt Cap</span>
+          </div>
+          <div class="scroll-body">{bo_rows}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown('<div class="sec-head">Chart View</div>', unsafe_allow_html=True)
+        sel2 = st.selectbox("Pick a stock", [b["symbol"] for b in bos],
+                            key="sel_tab2", label_visibility="collapsed")
+        if sel2:
+            b = next(x for x in bos if x["symbol"] == sel2)
+            render_chart(b, "t2")
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.metric("Close",          f"₹{b['close']:,}",       f"{b['day_chg']}% today")
+            c2.metric("Broken Swing High", f"₹{b['broken_sh']:,}")
+            c3.metric("Breakout",       f"+{b['bo_pct']}%",        b["label"])
+            c4.metric("Swing Low",      f"₹{b['swing_low']:,}" if b['swing_low'] else "—")
+            c5.metric("Volume",         f"{b['vol_ratio']}x",      "Confirmed ✅" if b['vol_ok'] else "Normal")
 
 st.markdown("""
 <div style='text-align:center;margin-top:48px;padding-top:18px;border-top:1px solid #0d1424;
