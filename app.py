@@ -442,14 +442,14 @@ if sel_sym:
             marker=dict(color='#60a5fa', size=8, symbol='triangle-up'),
             name="Swing Lows"), row=1, col=1)
 
-        vol_c = ['#4ade8055' if c >= o else '#f8717155'
+        vol_c = ['rgba(74,222,128,0.33)' if c >= o else 'rgba(248,113,113,0.33)'
                  for c, o in zip(df_c['Close'], df_c['Open'])]
         fig.add_trace(go.Bar(x=df_c.index, y=df_c['Volume'],
             marker_color=vol_c, showlegend=False), row=2, col=1)
 
         avg_v = df_c['Volume'].rolling(20).mean()
         fig.add_trace(go.Scatter(x=df_c.index, y=avg_v,
-            line=dict(color='#fbbf2450', width=1, dash='dot'),
+            line=dict(color='rgba(251,191,36,0.31)', width=1, dash='dot'),
             showlegend=False), row=2, col=1)
 
         fig.update_layout(
