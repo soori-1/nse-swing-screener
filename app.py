@@ -263,21 +263,40 @@ def find_valid_resistance(df, swing_highs, threshold_pct,
             continue
 
         # ════════════════════════════════════════════════════════
-        # CONDITION 5 — INTEGRITY CHECK (FIXES DIXON + DRREDDY)
-        # After the pullback low, price must NOT have traded above sh_price
-        # at any point up to (but not including) today.
-        # Tolerance: allow 0.2% wiggle for rounding / very minor wicks
+        # CONDITION 5 — INTEGRITY (after pullback to now, no piercing)
         # ════════════════════════════════════════════════════════
-        # Check bars from (lowest_after_idx) through (n-2), excluding today
         if lowest_after_idx < n - 1:
             highs_since_low = highs_arr[lowest_after_idx: n - 1]
             if len(highs_since_low) > 0:
                 max_high_since_low = float(highs_since_low.max())
-                # Allow tiny tolerance (0.2%) for wick noise; any bigger pierce = invalid
                 if max_high_since_low > sh_price * 1.002:
-                    continue  # Level already pierced — not a clean pre-breakout setup
+                    continue
 
-        # Condition 6: meaningful proximity
+        # ════════════════════════════════════════════════════════
+        # CONDITION 6 — CLEAN LEVEL CHECK (FIXES ULTRACEMCO)
+        # The level must not be a chop-zone pivot. Count how many
+        # times in the WHOLE history price has closed above sh_price.
+        # If > 10% of candles closed above, it's a range boundary, not
+        # a clean resistance — reject.
+        # ════════════════════════════════════════════════════════
+        closes_above = int(np.sum(closes > sh_price * 1.002))
+        close_above_ratio = closes_above / n
+        if close_above_ratio > 0.10:     # more than 10% of bars closed above
+            continue
+
+        # ════════════════════════════════════════════════════════
+        # CONDITION 7 — MUST BE A DOMINANT HIGH
+        # The swing high should be the HIGHEST point in at least the
+        # last 120 candles (6 months). This eliminates mid-range pivots
+        # that were just local highs inside a sideways pattern.
+        # ════════════════════════════════════════════════════════
+        window_len = min(120, bar_idx)
+        if window_len > 20:
+            pre_sh_highs = highs_arr[bar_idx - window_len: bar_idx]
+            if len(pre_sh_highs) > 0 and float(pre_sh_highs.max()) > sh_price:
+                continue   # there was an even higher high recently — skip
+
+        # Condition 8: meaningful proximity (within 15% of 60d high)
         if sh_price < high_60d * 0.85:
             continue
 
@@ -534,15 +553,7 @@ if st.session_state.results is None:
     st.stop()
 
 # ── TABS ──────────────────────────────────────────────────────
-tab1, tab2 = st.tabs(["🎯  Approaching Breakout", "🚀  Recent Breakouts"])
-
-# ════════════════════════════════════════════════════════════
-# TAB 1 — Approaching
-# ════════════════════════════════════════════════════════════
-with tab1:
- results = st.session_state.results
- if vol_only:
-    results = [r for r in results if r["vol_ok"]]
+tab1, tab2, tab3 = st.tabs(["🎯  Approaching Breakout", "🚀  Recent Breakouts", "🧪  Backtest"])
 
 # helper to render a candlestick chart for any stock dict
 def render_chart(sel, key_prefix=""):
@@ -766,6 +777,223 @@ with tab2:
             c3.metric("Breakout",       f"+{b['bo_pct']}%",        b["label"])
             c4.metric("Swing Low",      f"₹{b['swing_low']:,}" if b['swing_low'] else "—")
             c5.metric("Volume",         f"{b['vol_ratio']}x",      "Confirmed ✅" if b['vol_ok'] else "Normal")
+
+
+# ════════════════════════════════════════════════════════════
+# TAB 3 — Backtest
+# ════════════════════════════════════════════════════════════
+with tab3:
+    st.markdown("""
+    <div style='background:#0d1424;border:1px solid #1a2540;border-radius:10px;
+                padding:16px 20px;margin-bottom:20px'>
+        <div style='font-size:0.95rem;font-weight:600;color:#e2e8f0;margin-bottom:6px'>
+            🧪 Walk-Forward Backtest
+        </div>
+        <div style='font-size:0.78rem;color:#4b5e7e;line-height:1.6'>
+            Pick a stock → the engine walks through 2 years of daily candles, simulating
+            your screener at each bar. For every breakout signal it finds, it checks if
+            price hit +3% target or -3% stop within 20 trading days.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ---------- Inputs ----------
+    bt_col1, bt_col2, bt_col3, bt_col4 = st.columns([2, 1, 1, 1])
+    with bt_col1:
+        # All stocks in the watchlist + common custom stocks
+        all_symbols = sorted([s.replace(".NS", "") for s in WATCHLIST])
+        bt_symbol = st.selectbox("Stock", all_symbols, key="bt_sym",
+                                 index=all_symbols.index("TITAN") if "TITAN" in all_symbols else 0)
+    with bt_col2:
+        bt_target = st.number_input("Target %", 1.0, 15.0, 3.0, 0.5, key="bt_tgt")
+    with bt_col3:
+        bt_stop = st.number_input("Stop loss %", 1.0, 15.0, 3.0, 0.5, key="bt_stop")
+    with bt_col4:
+        bt_hold = st.number_input("Max hold (days)", 5, 60, 20, 1, key="bt_hold")
+
+    bt_run = st.button("▶️ Run Backtest", key="bt_btn")
+
+    # ---------- Logic ----------
+    def bt_validate(df, sh_idx, sh_price, min_pb=5.0):
+        """Returns (valid, pullback_pct, lowest_after, reason)"""
+        closes_after = df['Close'].values[sh_idx + 1:]
+        lows_after   = df['Low'].values[sh_idx + 1:]
+        highs_all    = df['High'].values
+        closes_all   = df['Close'].values
+        n = len(df)
+        if len(closes_after) == 0:
+            return False, 0, sh_price, "no_data"
+        lo_rel = int(np.argmin(lows_after))
+        lo_val = float(lows_after[lo_rel])
+        pb_pct = (sh_price - lo_val) / sh_price * 100
+        if pb_pct < min_pb:
+            return False, round(pb_pct, 2), round(lo_val, 2), "no_pullback"
+        lo_abs = sh_idx + 1 + lo_rel
+        if lo_abs < n - 1:
+            hs = highs_all[lo_abs: n - 1]
+            if len(hs) > 0 and float(hs.max()) > sh_price * 1.002:
+                return False, round(pb_pct, 2), round(lo_val, 2), "pierced"
+        if np.sum(closes_all > sh_price * 1.002) / n > 0.10:
+            return False, round(pb_pct, 2), round(lo_val, 2), "chop_zone"
+        win_len = min(120, sh_idx)
+        if win_len > 20:
+            pre = highs_all[sh_idx - win_len: sh_idx]
+            if len(pre) > 0 and float(pre.max()) > sh_price:
+                return False, round(pb_pct, 2), round(lo_val, 2), "not_dominant"
+        return True, round(pb_pct, 2), round(lo_val, 2), "valid"
+
+    if bt_run:
+        with st.spinner(f"Running walk-forward backtest on {bt_symbol}..."):
+            try:
+                df = yf.Ticker(f"{bt_symbol}.NS").history(period="2y", interval="1d")
+                if df.empty:
+                    st.error("Could not fetch data for this symbol.")
+                    st.stop()
+
+                # Find swings on full data
+                sh_all, sl_all = find_swings(df, lookback)
+
+                # --- SWING HIGH VALIDATION TABLE ---
+                st.markdown('<div class="sec-head">Step 1 — Swing High Validation</div>',
+                            unsafe_allow_html=True)
+
+                val_rows = []
+                for sh_date, sh_price in sh_all:
+                    try:
+                        bar_idx = df.index.get_loc(sh_date)
+                    except:
+                        continue
+                    ok, pb, lo, reason = bt_validate(df, bar_idx, sh_price)
+                    reason_map = {
+                        "valid": ("✅ VALID", "#4ade80"),
+                        "no_pullback": (f"❌ No pullback ({pb}%)", "#f87171"),
+                        "pierced": ("❌ Pierced", "#fbbf24"),
+                        "chop_zone": ("❌ Chop zone", "#f87171"),
+                        "not_dominant": ("❌ Not dominant", "#f87171"),
+                        "no_data": ("—", "#64748b"),
+                    }
+                    label, col = reason_map[reason]
+                    val_rows.append({
+                        "Date":         sh_date.strftime("%d %b '%y"),
+                        "Price":        f"₹{sh_price:,}",
+                        "Pullback":     f"{pb}%",
+                        "Lowest After": f"₹{lo:,}",
+                        "Status":       label,
+                    })
+
+                if val_rows:
+                    df_val = pd.DataFrame(val_rows)
+                    st.dataframe(df_val, use_container_width=True, hide_index=True, height=300)
+
+                # --- WALK-FORWARD SIGNALS ---
+                st.markdown('<div class="sec-head">Step 2 — Walk-Forward Signals & Trade Outcomes</div>',
+                            unsafe_allow_html=True)
+
+                signals = []
+                checked = set()
+                min_bars = lookback * 2 + 30
+                closes = df['Close'].values
+
+                for i in range(min_bars, len(df)):
+                    df_s = df.iloc[:i]
+                    sh_s, _ = find_swings(df_s, lookback)
+                    close_now  = float(df_s['Close'].iloc[-1])
+                    prev_close = float(df_s['Close'].iloc[-2])
+
+                    if i >= 50:
+                        ma50 = float(df_s['Close'].iloc[-50:].mean())
+                        if close_now < ma50 * 0.97:
+                            continue
+
+                    for sh_date, sh_price in reversed(sh_s):
+                        key = round(sh_price, 1)
+                        if key in checked:
+                            continue
+                        try:
+                            bidx = df_s.index.get_loc(sh_date)
+                        except:
+                            continue
+                        age = (i - 1) - bidx
+                        if age < lookback + 2:
+                            continue
+                        ok, pb, _, _ = bt_validate(df_s, bidx, sh_price)
+                        if not ok:
+                            continue
+                        # fresh breakout
+                        if prev_close <= sh_price < close_now:
+                            checked.add(key)
+                            # simulate trade
+                            future = closes[i: i + int(bt_hold)]
+                            outcome, exit_day, exit_px = "⏳ OPEN", None, None
+                            for j, fc in enumerate(future):
+                                if fc >= sh_price * (1 + bt_target/100):
+                                    outcome = f"✅ WIN +{bt_target}%"
+                                    exit_day = j + 1
+                                    exit_px = round(float(fc), 2)
+                                    break
+                                if fc <= sh_price * (1 - bt_stop/100):
+                                    outcome = f"❌ LOSS -{bt_stop}%"
+                                    exit_day = j + 1
+                                    exit_px = round(float(fc), 2)
+                                    break
+                            if outcome == "⏳ OPEN" and len(future) > 0:
+                                last = round(float(future[-1]), 2)
+                                chg = round((last - sh_price) / sh_price * 100, 2)
+                                outcome = f"⏳ OPEN ({chg:+.1f}%)"
+
+                            signals.append({
+                                "Signal Date": df_s.index[-1].strftime("%d %b '%y"),
+                                "Resistance":  f"₹{sh_price:,}",
+                                "Set On":      sh_date.strftime("%d %b '%y"),
+                                "Pullback":    f"{pb}%",
+                                "Entry":       f"₹{round(close_now,2):,}",
+                                "Exit Day":    exit_day or "—",
+                                "Outcome":     outcome,
+                            })
+                            break
+
+                if signals:
+                    df_sig = pd.DataFrame(signals)
+                    st.dataframe(df_sig, use_container_width=True, hide_index=True,
+                                 height=min(400, 40 * len(signals) + 50))
+                else:
+                    st.info("No breakout signals found for this stock in the last 2 years.")
+
+                # --- PERFORMANCE SUMMARY ---
+                wins    = sum(1 for s in signals if "WIN"  in s["Outcome"])
+                losses  = sum(1 for s in signals if "LOSS" in s["Outcome"])
+                opens   = sum(1 for s in signals if "OPEN" in s["Outcome"])
+                total   = len(signals)
+                wr      = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
+
+                if wr >= 60:
+                    verdict_text, vc = "STRONG", "#4ade80"
+                elif wr >= 45:
+                    verdict_text, vc = "MODERATE", "#fbbf24"
+                elif total == 0:
+                    verdict_text, vc = "NO SIGNALS", "#64748b"
+                else:
+                    verdict_text, vc = "WEAK", "#f87171"
+
+                st.markdown('<div class="sec-head">Step 3 — Performance Summary</div>',
+                            unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="kpi-row">
+                    <div class="kpi"><div class="kpi-val" style="color:#60a5fa">{total}</div>
+                        <div class="kpi-lbl">Total Signals</div></div>
+                    <div class="kpi"><div class="kpi-val" style="color:#4ade80">{wins}</div>
+                        <div class="kpi-lbl">Wins</div></div>
+                    <div class="kpi"><div class="kpi-val" style="color:#f87171">{losses}</div>
+                        <div class="kpi-lbl">Losses</div></div>
+                    <div class="kpi"><div class="kpi-val" style="color:#fbbf24">{opens}</div>
+                        <div class="kpi-lbl">Open</div></div>
+                    <div class="kpi"><div class="kpi-val" style="color:{vc}">{wr}%</div>
+                        <div class="kpi-lbl">Win Rate · {verdict_text}</div></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            except Exception as e:
+                st.error(f"Backtest failed: {e}")
 
 st.markdown("""
 <div style='text-align:center;margin-top:48px;padding-top:18px;border-top:1px solid #0d1424;
