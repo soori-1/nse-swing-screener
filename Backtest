@@ -1,0 +1,491 @@
+"""
+╔══════════════════════════════════════════════════════════════════╗
+║         NSE SWING BREAKOUT — LOGIC EXPLAINER + BACKTEST         ║
+╚══════════════════════════════════════════════════════════════════╝
+
+Run this file to:
+  1. Understand every step of the logic with printed explanations
+  2. Backtest the signal on any stock you choose
+  3. See pass/fail for each rule on each historical swing high
+  4. Get a performance summary: how many breakouts worked vs failed
+
+Usage:
+    pip install yfinance pandas tabulate
+    python backtest.py
+
+Change TEST_SYMBOLS below to test on any NSE stocks.
+"""
+
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from tabulate import tabulate
+from datetime import datetime
+
+# ─────────────────────────────────────────────────────────────
+# PARAMETERS  (same as the screener)
+# ─────────────────────────────────────────────────────────────
+LOOKBACK          = 10     # candles on each side to confirm a swing high
+MIN_PULLBACK_PCT  = 5.0    # price must pull back >= 5% after the swing high
+THRESHOLD_PCT     = 2.0    # pre-breakout: price within 2% of swing high
+MA_FILTER         = 0.97   # price must be >= 97% of 50MA (uptrend)
+
+# How far price must rise after breakout to count as "success" in backtest
+SUCCESS_TARGET_PCT = 3.0   # price must rise 3% above breakout level
+STOP_LOSS_PCT      = 3.0   # stop loss 3% below breakout level
+MAX_HOLD_CANDLES   = 20    # max days to wait for target/stop
+
+# Stocks to backtest
+TEST_SYMBOLS = [
+    "BHEL.NS",
+    "ANGELONE.NS",
+    "KOTAKBANK.NS",
+    "TITAN.NS",
+    "HDFCBANK.NS",
+    "PERSISTENT.NS",
+    "COALINDIA.NS",
+    "ZOMATO.NS",
+]
+
+PERIOD = "2y"
+
+
+# ─────────────────────────────────────────────────────────────
+# STEP 1 — SWING HIGH DETECTION
+# ─────────────────────────────────────────────────────────────
+def find_swings(df, lookback=LOOKBACK):
+    """
+    A swing high at index i means df['High'][i] is strictly the maximum
+    of the window [i-lookback .. i+lookback].
+
+    WHY THIS LOOKBACK?
+    - lookback=5  → finds minor peaks (noisy, too many)
+    - lookback=10 → finds meaningful pivot highs (balanced)
+    - lookback=15 → finds only major highs (fewer, more reliable)
+    """
+    highs, lows, n = df['High'].values, df['Low'].values, len(df)
+    sh, sl = [], []
+    for i in range(lookback, n - lookback):
+        if highs[i] == max(highs[i - lookback: i + lookback + 1]):
+            sh.append((df.index[i], round(float(highs[i]), 2), i))
+        if lows[i] == min(lows[i - lookback: i + lookback + 1]):
+            sl.append((df.index[i], round(float(lows[i]), 2), i))
+    return sh, sl
+
+
+# ─────────────────────────────────────────────────────────────
+# STEP 2 — RESISTANCE VALIDATION
+# ─────────────────────────────────────────────────────────────
+def validate_resistance(df, sh_idx, sh_price, min_pullback_pct=MIN_PULLBACK_PCT,
+                         check_integrity=True):
+    """
+    RULE 1: A swing high is only a valid RESISTANCE if, after it was formed,
+    price pulled back at least min_pullback_pct% below it.
+
+    RULE 2 (INTEGRITY): After the pullback low, price must NOT have traded above
+    the swing high (tolerance 0.2% for wicks) at any point before today.
+    If price already pierced above = the level has already been broken,
+    NOT a clean pre-breakout setup.
+
+    Returns: (is_valid, pullback_pct, lowest_price_after, pierced_flag)
+    """
+    import numpy as np
+    closes_after = df['Close'].values[sh_idx + 1:]
+    lows_after   = df['Low'].values[sh_idx + 1:]
+    highs_after  = df['High'].values[sh_idx + 1:]
+    n_total      = len(df)
+
+    if len(closes_after) == 0:
+        return False, 0.0, sh_price, False
+
+    # RULE 1 — pullback
+    lowest_after_rel = int(np.argmin(lows_after))
+    lowest_after     = float(lows_after[lowest_after_rel])
+    pullback_pct     = (sh_price - lowest_after) / sh_price * 100
+
+    if pullback_pct < min_pullback_pct:
+        return False, round(pullback_pct, 2), round(lowest_after, 2), False
+
+    # RULE 2 — integrity check
+    pierced = False
+    if check_integrity:
+        lowest_after_abs = sh_idx + 1 + lowest_after_rel
+        if lowest_after_abs < n_total - 1:
+            highs_since = df['High'].values[lowest_after_abs: n_total - 1]
+            if len(highs_since) > 0 and float(highs_since.max()) > sh_price * 1.002:
+                pierced = True
+
+    if pierced:
+        return False, round(pullback_pct, 2), round(lowest_after, 2), True
+
+    return True, round(pullback_pct, 2), round(lowest_after, 2), False
+
+
+# ─────────────────────────────────────────────────────────────
+# STEP 3 — PRE-BREAKOUT CHECK (for screener)
+# ─────────────────────────────────────────────────────────────
+def check_pre_breakout(df, sh_list, threshold_pct=THRESHOLD_PCT):
+    """
+    Given validated swing highs, checks if current price is approaching
+    one of them (within threshold_pct%) but has NOT broken above it yet.
+
+    Also applies the 50MA uptrend filter.
+
+    Returns: (signal, resistance_price, gap_pct, sh_date, reason_if_failed)
+    """
+    close = float(df['Close'].iloc[-1])
+    n     = len(df)
+
+    # Uptrend filter
+    if n >= 50:
+        ma50 = float(df['Close'].iloc[-50:].mean())
+        if close < ma50 * MA_FILTER:
+            return None, None, None, None, f"FAIL — Below 50MA (close={close:.1f}, 50MA={ma50:.1f})"
+
+    for sh_date, sh_price, sh_bar_idx in reversed(sh_list):
+        if sh_price <= close:
+            continue  # already broken above this level
+
+        age_candles = (n - 1) - sh_bar_idx
+        if age_candles < LOOKBACK + 2:
+            continue  # too fresh
+
+        is_valid, pullback_pct, lowest_after = validate_resistance(df, sh_bar_idx, sh_price)
+        if not is_valid:
+            continue  # no prior rejection — not a real resistance
+
+        gap_pct = round((sh_price - close) / sh_price * 100, 2)
+        if gap_pct > threshold_pct:
+            continue  # too far away
+
+        return "APPROACHING", sh_price, gap_pct, sh_date, None
+
+    return None, None, None, None, "FAIL — No valid resistance found within threshold"
+
+
+# ─────────────────────────────────────────────────────────────
+# STEP 4 — BACKTEST ENGINE
+# ─────────────────────────────────────────────────────────────
+def backtest_symbol(symbol, verbose=True):
+    """
+    Walks through history candle by candle.
+    At each point, checks if the screener would have signaled.
+    When a breakout occurs (close above validated resistance),
+    measures outcome: did price hit target (+3%) or stop (-3%) within 20 days?
+
+    Prints a detailed explanation of every signal found.
+    """
+    print(f"\n{'═'*65}")
+    print(f"  BACKTEST: {symbol}")
+    print(f"{'═'*65}")
+
+    t  = yf.Ticker(symbol)
+    df = t.history(period=PERIOD, interval="1d")
+
+    if df.empty:
+        print(f"  ✗ Could not fetch data for {symbol}")
+        return None
+
+    df = df.reset_index()
+    df.columns = [c.replace(' ','_') for c in df.columns]
+    # Re-index with DatetimeIndex for compatibility
+    df = df.set_index('Date')
+
+    print(f"  Data: {len(df)} daily candles  |  "
+          f"{df.index[0].strftime('%d %b %Y')} → {df.index[-1].strftime('%d %b %Y')}")
+    print(f"  Parameters: lookback={LOOKBACK}, min_pullback={MIN_PULLBACK_PCT}%, "
+          f"threshold={THRESHOLD_PCT}%, target={SUCCESS_TARGET_PCT}%, stop={STOP_LOSS_PCT}%\n")
+
+    # Find all swings on full history (for reference)
+    sh_all, sl_all = find_swings(df, LOOKBACK)
+
+    print(f"  Found {len(sh_all)} swing highs and {len(sl_all)} swing lows\n")
+
+    # ── Validate each swing high ──────────────────────────────
+    print(f"  {'─'*60}")
+    print(f"  SWING HIGH VALIDATION")
+    print(f"  {'─'*60}")
+
+    valid_sh_table = []
+    for sh_date, sh_price, sh_bar_idx in sh_all:
+        is_valid, pb_pct, lowest, pierced = validate_resistance(df, sh_bar_idx, sh_price)
+        status_txt = "✅ YES" if is_valid else (
+            "❌ PIERCED" if pierced else f"❌ NO (<{MIN_PULLBACK_PCT}%)"
+        )
+        valid_sh_table.append({
+            "Date"       : sh_date.strftime("%d %b '%y"),
+            "Price"      : f"₹{sh_price:,}",
+            "Pullback"   : f"{pb_pct}%",
+            "Lowest After": f"₹{lowest:,}",
+            "Valid?"     : status_txt,
+        })
+
+    print(tabulate(valid_sh_table, headers="keys", tablefmt="rounded_outline"))
+    print()
+
+    # ── Walk-forward breakout detection ──────────────────────
+    print(f"  {'─'*60}")
+    print(f"  BREAKOUT SIGNALS (walk-forward simulation)")
+    print(f"  {'─'*60}\n")
+
+    signals     = []
+    trades      = []
+    min_bars    = LOOKBACK * 2 + 30
+    checked_levels = set()  # avoid double-counting same resistance
+
+    for i in range(min_bars, len(df)):
+        df_slice  = df.iloc[:i]
+        sh_s, _   = find_swings(df_slice, LOOKBACK)
+
+        close_now = float(df_slice['Close'].iloc[-1])
+        prev_close= float(df_slice['Close'].iloc[-2])
+        today_date= df_slice.index[-1]
+
+        # Check each swing high for a FRESH breakout (prev below, now above)
+        for sh_date, sh_price, sh_bar_idx_slice in reversed(sh_s):
+            level_key = round(sh_price, 1)
+            if level_key in checked_levels:
+                continue
+
+            # Must be a validated resistance
+            is_valid, pb_pct, _, _ = validate_resistance(df_slice, sh_bar_idx_slice, sh_price)
+            if not is_valid:
+                continue
+
+            age = (i - 1) - sh_bar_idx_slice
+            if age < LOOKBACK + 2:
+                continue
+
+            # 50MA filter
+            if i >= 50:
+                ma50 = float(df_slice['Close'].iloc[-50:].mean())
+                if close_now < ma50 * MA_FILTER:
+                    break
+
+            # Fresh breakout condition
+            if prev_close <= sh_price < close_now:
+                checked_levels.add(level_key)
+
+                # Simulate trade outcome
+                outcome = "PENDING"
+                exit_price = None
+                exit_day   = None
+                future_closes = df['Close'].values[i: i + MAX_HOLD_CANDLES]
+
+                for j, fc in enumerate(future_closes):
+                    if fc >= sh_price * (1 + SUCCESS_TARGET_PCT / 100):
+                        outcome    = f"✅ WIN  (+{SUCCESS_TARGET_PCT}%)"
+                        exit_price = round(float(fc), 2)
+                        exit_day   = j + 1
+                        break
+                    if fc <= sh_price * (1 - STOP_LOSS_PCT / 100):
+                        outcome    = f"❌ LOSS (-{STOP_LOSS_PCT}%)"
+                        exit_price = round(float(fc), 2)
+                        exit_day   = j + 1
+                        break
+
+                if outcome == "PENDING" and len(future_closes) > 0:
+                    last_fc    = round(float(future_closes[-1]), 2)
+                    chg        = round((last_fc - sh_price) / sh_price * 100, 2)
+                    outcome    = f"⏳ OPEN ({chg:+.1f}%)"
+
+                signals.append({
+                    "Signal Date"  : today_date.strftime("%d %b '%y"),
+                    "Resistance"   : f"₹{sh_price:,}",
+                    "Set On"       : sh_date.strftime("%d %b '%y"),
+                    "Pullback"     : f"{pb_pct:.1f}%",
+                    "Close"        : f"₹{round(close_now,2):,}",
+                    "Outcome"      : outcome,
+                    "Exit Day"     : exit_day or "—",
+                })
+                trades.append(outcome)
+                break  # one signal per candle
+
+    if signals:
+        print(tabulate(signals, headers="keys", tablefmt="rounded_outline"))
+    else:
+        print("  No breakout signals found in this period.")
+
+    # ── Performance Summary ───────────────────────────────────
+    wins    = sum(1 for t in trades if "WIN"  in t)
+    losses  = sum(1 for t in trades if "LOSS" in t)
+    pending = sum(1 for t in trades if "OPEN" in t or "PENDING" in t)
+    total   = len(trades)
+    win_rate= round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
+
+    print(f"\n  {'─'*60}")
+    print(f"  PERFORMANCE SUMMARY")
+    print(f"  {'─'*60}")
+    print(f"  Total signals  : {total}")
+    print(f"  Wins (>{SUCCESS_TARGET_PCT}%)   : {wins}")
+    print(f"  Losses (<-{STOP_LOSS_PCT}%) : {losses}")
+    print(f"  Still open     : {pending}")
+    print(f"  Win rate       : {win_rate}%  (excl. open trades)")
+
+    if win_rate >= 60:
+        verdict = "✅ STRONG — signal logic is working well on this stock"
+    elif win_rate >= 45:
+        verdict = "⚠️  MODERATE — decent but consider tightening filters"
+    elif total == 0:
+        verdict = "ℹ️  NO SIGNALS — stock had no valid pre-breakout setups in 2Y"
+    else:
+        verdict = "❌ WEAK — too many false breakouts, review parameters"
+
+    print(f"  Verdict        : {verdict}\n")
+
+    return {"symbol": symbol, "signals": total, "wins": wins,
+            "losses": losses, "win_rate": win_rate, "pending": pending}
+
+
+# ─────────────────────────────────────────────────────────────
+# STEP 5 — EXPLAIN CURRENT STATE (like the screener does)
+# ─────────────────────────────────────────────────────────────
+def explain_current_state(symbol):
+    """
+    For a given stock RIGHT NOW, walks through every rule step by step
+    and explains exactly why it passes or fails the screener.
+    Use this to debug any stock.
+    """
+    print(f"\n{'═'*65}")
+    print(f"  CURRENT STATE EXPLAINER: {symbol}")
+    print(f"{'═'*65}")
+
+    t  = yf.Ticker(symbol)
+    df = t.history(period=PERIOD, interval="1d")
+
+    if df.empty:
+        print("  ✗ No data")
+        return
+
+    close = float(df['Close'].iloc[-1])
+    print(f"\n  Today's close : ₹{close:,}")
+    print(f"  Date          : {df.index[-1].strftime('%d %b %Y')}")
+
+    # 50MA check
+    ma50 = float(df['Close'].iloc[-50:].mean()) if len(df) >= 50 else None
+    if ma50:
+        ratio = close / ma50
+        status = "✅ PASS" if ratio >= MA_FILTER else "❌ FAIL"
+        print(f"\n  RULE 1 — Uptrend (50MA filter)")
+        print(f"    50MA        : ₹{ma50:.1f}")
+        print(f"    Close/50MA  : {ratio:.3f}  (need >= {MA_FILTER})")
+        print(f"    Result      : {status}")
+
+    # Swing highs
+    sh_all, sl_all = find_swings(df, LOOKBACK)
+    print(f"\n  RULE 2 — Swing High Detection (lookback={LOOKBACK})")
+    print(f"    Found {len(sh_all)} swing highs in 2Y history")
+
+    print(f"\n  RULE 3 — Resistance Validation (need {MIN_PULLBACK_PCT}% pullback after high)")
+    any_valid = False
+    for sh_date, sh_price, sh_bar_idx in reversed(sh_all[-6:]):
+        is_valid, pb_pct, lowest, pierced = validate_resistance(df, sh_bar_idx, sh_price)
+        age = (len(df) - 1) - sh_bar_idx
+        above = sh_price > close
+        reason = ""
+        if is_valid and above:
+            reason = "✅ VALID"
+            any_valid = True
+        elif pierced:
+            reason = "❌ PIERCED (already broken)"
+        elif not above:
+            reason = "↑ price already above"
+        elif pb_pct < MIN_PULLBACK_PCT:
+            reason = f"❌ No pullback ({pb_pct:.1f}%<{MIN_PULLBACK_PCT}%)"
+        else:
+            reason = "❌ SKIP"
+        print(f"    SH Rs.{sh_price:,} on {sh_date.strftime('%d %b %y')} | "
+              f"Age:{age}bars | Pullback:{pb_pct:.1f}% | {reason}")
+
+    print(f"\n  RULE 4 — Pre-Breakout Gap (within {THRESHOLD_PCT}%)")
+    signal, res_price, gap_pct, sh_date, reason = check_pre_breakout(df, sh_all)
+
+    if signal:
+        print(f"    Resistance  : ₹{res_price:,}  (set {sh_date.strftime('%d %b %y')})")
+        print(f"    Gap to high : {gap_pct}%")
+        sig_label = "🔴 HOT" if gap_pct <= 0.5 else "🟡 WARM" if gap_pct <= 1.2 else "🔵 CLOSE"
+        print(f"    Signal      : {sig_label}")
+        print(f"\n  ✅ SCREENER WOULD SHOW THIS STOCK")
+    else:
+        print(f"    {reason}")
+        print(f"\n  ❌ SCREENER WOULD NOT SHOW THIS STOCK")
+        if not any_valid:
+            print(f"     Reason: No swing high has a {MIN_PULLBACK_PCT}%+ pullback after it")
+            print(f"     → Price may be at/near all-time recent highs (like BHEL)")
+            print(f"     → Or stock is in downtrend (like KOTAKBANK)")
+
+
+# ─────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    print("\n" + "█"*65)
+    print("  NSE SWING BREAKOUT — LOGIC EXPLAINER + BACKTEST")
+    print("█"*65)
+    print(f"""
+WHAT THIS TESTS:
+  The screener only shows a stock if ALL 4 rules pass:
+
+  RULE 1 — Uptrend filter
+    Close >= 50-day MA × {MA_FILTER}
+    Why: We only want breakouts in rising stocks
+
+  RULE 2 — Swing high detection
+    Local maximum with {LOOKBACK} candles on each side
+    Why: Identifies actual pivot highs, not noise
+
+  RULE 3 — Resistance validation  ← THE KEY RULE
+    After the swing high, price must drop >= {MIN_PULLBACK_PCT}%
+    Why: Proves the level was REJECTED by the market
+         Without this, BHEL's current rally peak falsely
+         appears as a "resistance to break"
+
+  RULE 4 — Pre-breakout proximity
+    Price must be within {THRESHOLD_PCT}% below the resistance
+    Why: You want to enter BEFORE the breakout, not after
+
+BACKTEST LOGIC:
+  For each signal, we simulate a trade:
+    Entry : when close breaks above resistance
+    Target: +{SUCCESS_TARGET_PCT}% above resistance level
+    Stop  : -{STOP_LOSS_PCT}% below resistance level
+    Max hold: {MAX_HOLD_CANDLES} trading days
+""")
+
+    # ── Part 1: Explain current state for key stocks ──────────
+    print("\n" + "═"*65)
+    print("  PART 1: WHY DOES/DOESN'T THE SCREENER SHOW EACH STOCK?")
+    print("═"*65)
+    for sym in TEST_SYMBOLS:
+        explain_current_state(sym)
+
+    # ── Part 2: Full backtest ─────────────────────────────────
+    print("\n\n" + "═"*65)
+    print("  PART 2: FULL BACKTEST (2 YEARS WALK-FORWARD)")
+    print("═"*65)
+    summary = []
+    for sym in TEST_SYMBOLS:
+        result = backtest_symbol(sym, verbose=True)
+        if result:
+            summary.append(result)
+
+    # ── Overall summary ───────────────────────────────────────
+    if summary:
+        print("\n" + "█"*65)
+        print("  OVERALL BACKTEST SUMMARY")
+        print("█"*65)
+        total_wins   = sum(s["wins"]    for s in summary)
+        total_losses = sum(s["losses"]  for s in summary)
+        total_sigs   = sum(s["signals"] for s in summary)
+        overall_wr   = round(total_wins / (total_wins + total_losses) * 100, 1) \
+                       if (total_wins + total_losses) > 0 else 0
+
+        rows = [[s["symbol"].replace(".NS",""), s["signals"],
+                 s["wins"], s["losses"], s["pending"],
+                 f"{s['win_rate']}%"] for s in summary]
+        print(tabulate(rows,
+              headers=["Stock","Signals","Wins","Losses","Open","Win Rate"],
+              tablefmt="rounded_outline"))
+        print(f"\n  Combined win rate : {overall_wr}%  ({total_wins}W / {total_losses}L)")
+        print(f"  Total signals     : {total_sigs} across {len(summary)} stocks / 2 years")
+        print()
