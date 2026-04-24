@@ -52,7 +52,7 @@ section[data-testid="stSidebar"] .block-container { padding-top:1rem !important;
     font-family:'Fraunces',serif; font-weight:700; font-size:2.6rem;
     letter-spacing:-1px; color:var(--bronze); line-height:1; margin:0;
 }
-.masthead-brand span { color:var(--ink); font-style:italic; font-weight:500; }
+.masthead-brand span { color:var(--ink); font-style:normal; font-weight:700; }
 .masthead-tagline {
     font-family:'JetBrains Mono',monospace; font-size:0.68rem; color:var(--ink-muted);
     text-transform:uppercase; letter-spacing:3.5px; margin-top:6px;
