@@ -5,24 +5,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
-hide_streamlit_style = """
-<style>
-/* Hides the top-right menu */
-#MainMenu {visibility: hidden;}
 
-/* Hides the 'Made with Streamlit' footer */
-footer {visibility: hidden;}
-
-/* Hides the top header line completely */
-header {visibility: hidden;}
-
-/* Hides the 'Deploy' button specifically */
-.stDeployButton {display:none;}
-</style>
-"""
-
-# Inject the CSS into the Streamlit app
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 st.set_page_config(
     page_title="NSE Breakout Watch",
     page_icon="🎯",
@@ -178,79 +161,148 @@ SECTOR_COLORS = {
 }
 
 # ── LOGIC ─────────────────────────────────────────────────────
-def find_swings(df, lookback=5, min_swing_pct=1.5):
+def find_swings(df, lookback=10):
     """
-    min_swing_pct: swing high must be at least X% above the average of
-    surrounding candles. Filters out minor bounces inside downtrends.
+    Pure swing detection: a swing high at index i means df['High'][i]
+    is strictly greater than all highs in the window [i-lookback .. i+lookback].
+    Returns list of (date, price) tuples sorted oldest → newest.
     """
     highs, lows, n = df['High'].values, df['Low'].values, len(df)
     sh, sl = [], []
     for i in range(lookback, n - lookback):
-        window_h = highs[i-lookback:i+lookback+1]
-        window_l = lows[i-lookback:i+lookback+1]
-        if highs[i] == max(window_h):
-            avg_surr = (sum(window_h) - highs[i]) / (len(window_h) - 1)
-            if (highs[i] - avg_surr) / avg_surr * 100 >= min_swing_pct:
-                sh.append((df.index[i], round(float(highs[i]), 2)))
-        if lows[i] == min(window_l):
-            avg_surr = (sum(window_l) - lows[i]) / (len(window_l) - 1)
-            if (avg_surr - lows[i]) / avg_surr * 100 >= min_swing_pct:
-                sl.append((df.index[i], round(float(lows[i]), 2)))
+        if highs[i] == max(highs[i - lookback: i + lookback + 1]):
+            sh.append((df.index[i], round(float(highs[i]), 2)))
+        if lows[i] == min(lows[i - lookback: i + lookback + 1]):
+            sl.append((df.index[i], round(float(lows[i]), 2)))
     return sh, sl
 
 
-def check_approaching(df, swing_highs, threshold_pct, vol_mult, min_sh_age_days=20):
+def find_valid_resistance(df, swing_highs, threshold_pct,
+                          min_pullback_pct=5.0, min_sh_age_candles=10):
     """
-    Rules for a VALID pre-breakout setup:
-    1. Swing high must be at least min_sh_age_days old (not a fresh minor bounce)
-    2. Swing high must be the highest point in the last 60 days (real resistance)
-    3. Price must be above its 50MA (uptrend, not a dead-cat bounce in downtrend)
-    4. Price must be within threshold_pct% below that swing high
+    CMT-validated pre-breakout resistance detection.
+
+    A swing high is valid resistance ONLY when ALL five conditions hold:
+
+    CONDITION 1 — Prior rejection (the most important rule):
+        After the swing high was formed, price must have pulled back AT LEAST
+        min_pullback_pct% below that high. This proves market rejected price there.
+
+    CONDITION 2 — Below resistance now:
+        Current close < swing high. Gap <= threshold_pct%.
+
+    CONDITION 3 — Uptrend context:
+        Close > 50MA * 0.97. We only trade breakouts in rising stocks.
+
+    CONDITION 4 — Age confirmation:
+        Swing high must be at least min_sh_age_candles old (not forming now).
+
+    CONDITION 5 — INTEGRITY (the new rule that fixes DIXON + DRREDDY):
+        Since price pulled back from SH to its lowest point, price must NOT
+        have traded ABOVE the swing high level at any point before today.
+        If price already pierced above SH and came back down, this level is
+        no longer a clean pre-breakout resistance — it is a chop zone.
+
+        Specifically: between the pullback low and today, no HIGH may exceed
+        the swing high price.
+
+    CONDITION 6 — Meaningful proximity (avoid distant highs):
+        The swing high must be within 15% of the current 60-day high.
+        Filters out irrelevant ancient highs when price has already rallied past.
+
+    Returns: (valid, resistance_price, gap_pct, sh_date)
     """
     if not swing_highs:
-        return False, None, None, False, 0
+        return False, None, None, None
 
-    close    = float(df['Close'].iloc[-1])
+    close     = float(df['Close'].iloc[-1])
+    closes    = df['Close'].values
+    highs_arr = df['High'].values
+    lows_arr  = df['Low'].values
+    n         = len(df)
+
+    # Condition 3: Uptrend filter
+    if n >= 50:
+        ma50 = float(df['Close'].iloc[-50:].mean())
+        if close < ma50 * 0.97:
+            return False, None, None, None
+
+    # Reference for Condition 6
+    high_60d = float(df['High'].iloc[-60:].max()) if n >= 60 else float(df['High'].max())
+
+    best_sh   = None
+    best_date = None
+
+    # Walk from most recent swing high backwards
+    for sh_date, sh_price in reversed(swing_highs):
+        # Condition 2a: must still be above current close
+        if sh_price <= close:
+            continue
+
+        try:
+            bar_idx = df.index.get_loc(sh_date)
+        except Exception:
+            continue
+
+        # Condition 4: age confirmation
+        if (n - 1 - bar_idx) < min_sh_age_candles:
+            continue
+
+        # Condition 1: pullback after SH
+        post_sh_closes = closes[bar_idx + 1:]
+        post_sh_lows   = lows_arr[bar_idx + 1:]
+        if len(post_sh_closes) == 0:
+            continue
+
+        lowest_after_idx_rel = int(np.argmin(post_sh_lows))
+        lowest_after_idx     = bar_idx + 1 + lowest_after_idx_rel
+        lowest_after         = float(post_sh_lows[lowest_after_idx_rel])
+        pullback_pct         = (sh_price - lowest_after) / sh_price * 100
+
+        if pullback_pct < min_pullback_pct:
+            continue
+
+        # ════════════════════════════════════════════════════════
+        # CONDITION 5 — INTEGRITY CHECK (FIXES DIXON + DRREDDY)
+        # After the pullback low, price must NOT have traded above sh_price
+        # at any point up to (but not including) today.
+        # Tolerance: allow 0.2% wiggle for rounding / very minor wicks
+        # ════════════════════════════════════════════════════════
+        # Check bars from (lowest_after_idx) through (n-2), excluding today
+        if lowest_after_idx < n - 1:
+            highs_since_low = highs_arr[lowest_after_idx: n - 1]
+            if len(highs_since_low) > 0:
+                max_high_since_low = float(highs_since_low.max())
+                # Allow tiny tolerance (0.2%) for wick noise; any bigger pierce = invalid
+                if max_high_since_low > sh_price * 1.002:
+                    continue  # Level already pierced — not a clean pre-breakout setup
+
+        # Condition 6: meaningful proximity
+        if sh_price < high_60d * 0.85:
+            continue
+
+        # Condition 2b: gap within threshold
+        gap_pct = round((sh_price - close) / sh_price * 100, 2)
+        if gap_pct > threshold_pct:
+            continue
+
+        # All conditions passed
+        best_sh   = sh_price
+        best_date = sh_date
+        break
+
+    if best_sh is None:
+        return False, None, None, None
+
+    gap_pct = round((best_sh - close) / best_sh * 100, 2)
+    return True, best_sh, gap_pct, best_date
+
+
+def get_vol_info(df, vol_mult):
     vol_now  = float(df['Volume'].iloc[-1])
     vol_avg  = float(df['Volume'].iloc[-21:-1].mean())
     vol_ratio= round(vol_now / vol_avg, 2) if vol_avg > 0 else 0
-    today    = df.index[-1]
-
-    # Filter 1: Uptrend — price must be above 50MA
-    if len(df) >= 50:
-        ma50 = float(df['Close'].iloc[-50:].mean())
-        if close < ma50 * 0.97:
-            return False, None, None, False, 0
-
-    # Filter 2: Find swing highs that are:
-    #   a) above current close
-    #   b) at least min_sh_age_days old (not a recent minor bounce)
-    #   c) the highest point in last 60 candles (meaningful resistance)
-    high_60d = float(df['High'].iloc[-60:].max()) if len(df) >= 60 else float(df['High'].max())
-
-    valid_sh   = None
-    valid_date = None
-    for date, price in reversed(swing_highs):
-        age_days = (today - date).days
-        if price <= close:
-            continue
-        if age_days < min_sh_age_days:          # too recent — skip minor bounces
-            continue
-        # Must be within 10% of the 60-day high (real resistance, not a distant old high)
-        if price < high_60d * 0.90:
-            continue
-        valid_sh   = price
-        valid_date = date
-        break
-
-    if valid_sh is None:
-        return False, None, None, False, 0
-
-    gap_pct = round((valid_sh - close) / valid_sh * 100, 2)
-    if gap_pct > threshold_pct:
-        return False, None, None, False, 0
-
-    return True, valid_sh, gap_pct, vol_ratio >= vol_mult, vol_ratio
+    return vol_ratio >= vol_mult, vol_ratio
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -259,36 +311,42 @@ def run_screener(lookback, vol_mult, min_mcap, threshold):
     for sym in WATCHLIST:
         try:
             t  = yf.Ticker(sym)
-            df = t.history(period="2y", interval="1d")   # full 2-year history
-            if df.empty or len(df) < lookback * 2 + 20:
+            df = t.history(period="2y", interval="1d")
+            if df.empty or len(df) < lookback * 2 + 30:
                 continue
             mcap_cr = (getattr(t.fast_info, "market_cap", 0) or 0) / 1e7
             if mcap_cr < min_mcap:
                 continue
+
             sh, sl = find_swings(df, lookback)
-            ok, last_sh, gap, vol_ok, vol_r = check_approaching(df, sh, threshold, vol_mult)
+            ok, res_price, gap, sh_date = find_valid_resistance(
+                df, sh, threshold, min_pullback_pct=5.0, min_sh_age_candles=lookback + 2
+            )
             if not ok:
                 continue
+
+            vol_ok, vol_r = get_vol_info(df, vol_mult)
             close   = round(float(df['Close'].iloc[-1]), 2)
             prev    = round(float(df['Close'].iloc[-2]), 2)
             day_chg = round((close - prev) / prev * 100, 2)
             signal  = "HOT" if gap <= 0.5 else "WARM" if gap <= 1.2 else "CLOSE"
+
             results.append({
-                "symbol"   : sym.replace(".NS",""),
-                "full_sym" : sym,
-                "close"    : close,
-                "day_chg"  : day_chg,
-                "swing_high": last_sh,
-                "sh_date"  : sh[-1][0].strftime("%d %b '%y"),
-                "swing_low": sl[-1][1] if sl else None,
-                "gap_pct"  : gap,
-                "vol_ok"   : vol_ok,
-                "vol_ratio": vol_r,
-                "mcap_cr"  : round(mcap_cr),
-                "sector"   : SECTOR_MAP.get(sym, "Other"),
-                "signal"   : signal,
-                "sh_list"  : [(d.strftime("%Y-%m-%d"), p) for d, p in sh[-8:]],
-                "sl_list"  : [(d.strftime("%Y-%m-%d"), p) for d, p in sl[-8:]],
+                "symbol"    : sym.replace(".NS",""),
+                "full_sym"  : sym,
+                "close"     : close,
+                "day_chg"   : day_chg,
+                "swing_high": res_price,
+                "sh_date"   : sh_date.strftime("%d %b '%y"),
+                "swing_low" : sl[-1][1] if sl else None,
+                "gap_pct"   : gap,
+                "vol_ok"    : vol_ok,
+                "vol_ratio" : vol_r,
+                "mcap_cr"   : round(mcap_cr),
+                "sector"    : SECTOR_MAP.get(sym, "Other"),
+                "signal"    : signal,
+                "sh_list"   : [(d.strftime("%Y-%m-%d"), p) for d, p in sh[-8:]],
+                "sl_list"   : [(d.strftime("%Y-%m-%d"), p) for d, p in sl[-8:]],
             })
         except:
             continue
@@ -299,84 +357,94 @@ def run_screener(lookback, vol_mult, min_mcap, threshold):
 @st.cache_data(ttl=900, show_spinner=False)
 def run_recent_breakouts(lookback, vol_mult, min_mcap, days_back=5):
     """
-    Finds stocks that broke above their swing high within the last `days_back` candles.
-    These are confirmed breakouts — like Angel One today.
+    Finds stocks that:
+    1. Had a valid resistance level (swing high WITH prior pullback >= 5%)
+    2. Closed above that resistance within the last `days_back` candles
+    3. Are in an uptrend (above 50MA)
     """
     results = []
     for sym in WATCHLIST:
         try:
             t  = yf.Ticker(sym)
             df = t.history(period="2y", interval="1d")
-            if df.empty or len(df) < lookback * 2 + 20:
+            if df.empty or len(df) < lookback * 2 + 30:
                 continue
             mcap_cr = (getattr(t.fast_info, "market_cap", 0) or 0) / 1e7
             if mcap_cr < min_mcap:
                 continue
+
             sh, sl = find_swings(df, lookback)
             if not sh:
                 continue
 
-            close     = float(df['Close'].iloc[-1])
-            prev_close= float(df['Close'].iloc[-2])
-            day_chg   = round((close - prev_close) / prev_close * 100, 2)
-            vol_now   = float(df['Volume'].iloc[-1])
-            vol_avg   = float(df['Volume'].iloc[-21:-1].mean())
-            vol_ratio = round(vol_now / vol_avg, 2) if vol_avg > 0 else 0
+            closes    = df['Close'].values
+            n         = len(df)
+            today_close = float(closes[-1])
 
-            # Look through recent candles to find if a breakout happened
-            breakout_day  = None
-            breakout_price= None
-            broken_sh     = None
+            # Uptrend filter
+            if n >= 50:
+                ma50 = float(df['Close'].iloc[-50:].mean())
+                if today_close < ma50 * 0.97:
+                    continue
+
+            # For each of the last days_back candles, check if it broke a valid resistance
+            breakout_found    = False
+            breakout_days_ago = None
+            broken_level      = None
+            broken_sh_date    = None
 
             for days_ago in range(1, days_back + 1):
-                idx = -days_ago
-                candle_close = float(df['Close'].iloc[idx])
-                candle_date  = df.index[idx]
+                candle_idx   = n - days_ago
+                candle_close = float(closes[candle_idx])
+                prev_close   = float(closes[candle_idx - 1])
 
-                # Find the most recent swing high that existed BEFORE this candle
-                # and that this candle closed above
-                prior_sh = [p for d, p in sh if d < candle_date]
-                if not prior_sh:
+                # Build a df slice UP TO the candle before this one
+                df_slice = df.iloc[:candle_idx]
+                sh_slice, _ = find_swings(df_slice, lookback)
+
+                # Find a valid resistance in the history before this candle
+                ok, res_price, _, res_date = find_valid_resistance(
+                    df_slice, sh_slice, threshold_pct=50,   # wide threshold — we just need the level
+                    min_pullback_pct=5.0, min_sh_age_candles=lookback + 2
+                )
+                if not ok:
                     continue
-                nearest_sh = max(p for p in prior_sh if p < candle_close * 1.05)  # within 5%
 
-                if nearest_sh and candle_close > nearest_sh:
-                    # Check previous candle was below (fresh breakout)
-                    prev_candle = float(df['Close'].iloc[idx - 1])
-                    if prev_candle <= nearest_sh:
-                        breakout_day   = days_ago
-                        breakout_price = nearest_sh
-                        broken_sh      = nearest_sh
-                        break
+                # Fresh breakout: this candle closed above resistance, previous candle was below
+                if candle_close > res_price and prev_close <= res_price:
+                    breakout_found    = True
+                    breakout_days_ago = days_ago
+                    broken_level      = res_price
+                    broken_sh_date    = res_date
+                    break
 
-            if breakout_day is None:
+            if not breakout_found:
                 continue
 
-            # Uptrend filter: must be above 50MA
-            if len(df) >= 50:
-                ma50 = float(df['Close'].iloc[-50:].mean())
-                if close < ma50 * 0.95:
-                    continue
-
-            bo_pct = round((close - broken_sh) / broken_sh * 100, 2)
-            label  = "TODAY" if breakout_day == 1 else f"{breakout_day}D AGO"
+            vol_ok, vol_r = get_vol_info(df, vol_mult)
+            close   = round(today_close, 2)
+            prev    = round(float(closes[-2]), 2)
+            day_chg = round((close - prev) / prev * 100, 2)
+            bo_pct  = round((close - broken_level) / broken_level * 100, 2)
+            label   = "TODAY" if breakout_days_ago == 1 else f"{breakout_days_ago}D AGO"
 
             results.append({
-                "symbol"      : sym.replace(".NS",""),
-                "full_sym"    : sym,
-                "close"       : close,
-                "day_chg"     : day_chg,
-                "broken_sh"   : broken_sh,
-                "bo_pct"      : bo_pct,
-                "days_ago"    : breakout_day,
-                "label"       : label,
-                "swing_low"   : sl[-1][1] if sl else None,
-                "vol_ratio"   : vol_ratio,
-                "vol_ok"      : vol_ratio >= vol_mult,
-                "mcap_cr"     : round(mcap_cr),
-                "sector"      : SECTOR_MAP.get(sym, "Other"),
-                "sh_list"     : [(d.strftime("%Y-%m-%d"), p) for d, p in sh[-8:]],
-                "sl_list"     : [(d.strftime("%Y-%m-%d"), p) for d, p in sl[-8:]],
+                "symbol"    : sym.replace(".NS",""),
+                "full_sym"  : sym,
+                "close"     : close,
+                "day_chg"   : day_chg,
+                "broken_sh" : broken_level,
+                "sh_date"   : broken_sh_date.strftime("%d %b '%y") if broken_sh_date else "—",
+                "bo_pct"    : bo_pct,
+                "days_ago"  : breakout_days_ago,
+                "label"     : label,
+                "swing_low" : sl[-1][1] if sl else None,
+                "vol_ratio" : vol_r,
+                "vol_ok"    : vol_ok,
+                "mcap_cr"   : round(mcap_cr),
+                "sector"    : SECTOR_MAP.get(sym, "Other"),
+                "sh_list"   : [(d.strftime("%Y-%m-%d"), p) for d, p in sh[-8:]],
+                "sl_list"   : [(d.strftime("%Y-%m-%d"), p) for d, p in sl[-8:]],
             })
         except:
             continue
