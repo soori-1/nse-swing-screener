@@ -780,42 +780,32 @@ with tab2:
 
 
 # ════════════════════════════════════════════════════════════
-# TAB 3 — Backtest
+# TAB 3 — Logic Validator (does the screener correctly spot breakouts?)
 # ════════════════════════════════════════════════════════════
 with tab3:
     st.markdown("""
     <div style='background:#0d1424;border:1px solid #1a2540;border-radius:10px;
                 padding:16px 20px;margin-bottom:20px'>
         <div style='font-size:0.95rem;font-weight:600;color:#e2e8f0;margin-bottom:6px'>
-            🧪 Walk-Forward Backtest
+            🧪 Logic Validator
         </div>
         <div style='font-size:0.78rem;color:#4b5e7e;line-height:1.6'>
-            Pick a stock → the engine walks through 2 years of daily candles, simulating
-            your screener at each bar. For every breakout signal it finds, it checks if
-            price hit +3% target or -3% stop within 20 trading days.
+            Pick any stock. The engine walks through 2 years of daily history and shows
+            EVERY point where the screener would have flagged a valid swing breakout.
+            You can then verify visually on the chart: did price actually break out?
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ---------- Inputs ----------
-    bt_col1, bt_col2, bt_col3, bt_col4 = st.columns([2, 1, 1, 1])
-    with bt_col1:
-        # All stocks in the watchlist + common custom stocks
-        all_symbols = sorted([s.replace(".NS", "") for s in WATCHLIST])
-        bt_symbol = st.selectbox("Stock", all_symbols, key="bt_sym",
-                                 index=all_symbols.index("TITAN") if "TITAN" in all_symbols else 0)
-    with bt_col2:
-        bt_target = st.number_input("Target %", 1.0, 15.0, 3.0, 0.5, key="bt_tgt")
-    with bt_col3:
-        bt_stop = st.number_input("Stop loss %", 1.0, 15.0, 3.0, 0.5, key="bt_stop")
-    with bt_col4:
-        bt_hold = st.number_input("Max hold (days)", 5, 60, 20, 1, key="bt_hold")
+    # ---------- Simple inputs — just pick a stock ----------
+    all_symbols = sorted([s.replace(".NS", "") for s in WATCHLIST])
+    bt_symbol = st.selectbox("Stock to validate",
+                             all_symbols, key="bt_sym",
+                             index=all_symbols.index("TITAN") if "TITAN" in all_symbols else 0)
+    bt_run = st.button("▶️  Validate", key="bt_btn")
 
-    bt_run = st.button("▶️ Run Backtest", key="bt_btn")
-
-    # ---------- Logic ----------
+    # ---------- Logic helper ----------
     def bt_validate(df, sh_idx, sh_price, min_pb=5.0):
-        """Returns (valid, pullback_pct, lowest_after, reason)"""
         closes_after = df['Close'].values[sh_idx + 1:]
         lows_after   = df['Low'].values[sh_idx + 1:]
         highs_all    = df['High'].values
@@ -843,56 +833,20 @@ with tab3:
         return True, round(pb_pct, 2), round(lo_val, 2), "valid"
 
     if bt_run:
-        with st.spinner(f"Running walk-forward backtest on {bt_symbol}..."):
+        with st.spinner(f"Walking through 2Y history of {bt_symbol}..."):
             try:
                 df = yf.Ticker(f"{bt_symbol}.NS").history(period="2y", interval="1d")
                 if df.empty:
                     st.error("Could not fetch data for this symbol.")
                     st.stop()
 
-                # Find swings on full data
                 sh_all, sl_all = find_swings(df, lookback)
 
-                # --- SWING HIGH VALIDATION TABLE ---
-                st.markdown('<div class="sec-head">Step 1 — Swing High Validation</div>',
-                            unsafe_allow_html=True)
-
-                val_rows = []
-                for sh_date, sh_price in sh_all:
-                    try:
-                        bar_idx = df.index.get_loc(sh_date)
-                    except:
-                        continue
-                    ok, pb, lo, reason = bt_validate(df, bar_idx, sh_price)
-                    reason_map = {
-                        "valid": ("✅ VALID", "#4ade80"),
-                        "no_pullback": (f"❌ No pullback ({pb}%)", "#f87171"),
-                        "pierced": ("❌ Pierced", "#fbbf24"),
-                        "chop_zone": ("❌ Chop zone", "#f87171"),
-                        "not_dominant": ("❌ Not dominant", "#f87171"),
-                        "no_data": ("—", "#64748b"),
-                    }
-                    label, col = reason_map[reason]
-                    val_rows.append({
-                        "Date":         sh_date.strftime("%d %b '%y"),
-                        "Price":        f"₹{sh_price:,}",
-                        "Pullback":     f"{pb}%",
-                        "Lowest After": f"₹{lo:,}",
-                        "Status":       label,
-                    })
-
-                if val_rows:
-                    df_val = pd.DataFrame(val_rows)
-                    st.dataframe(df_val, use_container_width=True, hide_index=True, height=300)
-
-                # --- WALK-FORWARD SIGNALS ---
-                st.markdown('<div class="sec-head">Step 2 — Walk-Forward Signals & Trade Outcomes</div>',
-                            unsafe_allow_html=True)
-
+                # Walk forward — find every historical breakout signal
                 signals = []
                 checked = set()
                 min_bars = lookback * 2 + 30
-                closes = df['Close'].values
+                closes_arr = df['Close'].values
 
                 for i in range(min_bars, len(df)):
                     df_s = df.iloc[:i]
@@ -913,87 +867,145 @@ with tab3:
                             bidx = df_s.index.get_loc(sh_date)
                         except:
                             continue
-                        age = (i - 1) - bidx
-                        if age < lookback + 2:
+                        if (i - 1) - bidx < lookback + 2:
                             continue
                         ok, pb, _, _ = bt_validate(df_s, bidx, sh_price)
                         if not ok:
                             continue
-                        # fresh breakout
+                        # fresh breakout: prev candle below, current above
                         if prev_close <= sh_price < close_now:
                             checked.add(key)
-                            # simulate trade
-                            future = closes[i: i + int(bt_hold)]
-                            outcome, exit_day, exit_px = "⏳ OPEN", None, None
-                            for j, fc in enumerate(future):
-                                if fc >= sh_price * (1 + bt_target/100):
-                                    outcome = f"✅ WIN +{bt_target}%"
-                                    exit_day = j + 1
-                                    exit_px = round(float(fc), 2)
-                                    break
-                                if fc <= sh_price * (1 - bt_stop/100):
-                                    outcome = f"❌ LOSS -{bt_stop}%"
-                                    exit_day = j + 1
-                                    exit_px = round(float(fc), 2)
-                                    break
-                            if outcome == "⏳ OPEN" and len(future) > 0:
-                                last = round(float(future[-1]), 2)
-                                chg = round((last - sh_price) / sh_price * 100, 2)
-                                outcome = f"⏳ OPEN ({chg:+.1f}%)"
+                            # Check what happened over next 10 days for visual sanity
+                            future_10 = closes_arr[i: i + 10]
+                            if len(future_10) > 0:
+                                max_gain = round((future_10.max() - sh_price) / sh_price * 100, 2)
+                                min_draw = round((future_10.min() - sh_price) / sh_price * 100, 2)
+                                final_chg = round((future_10[-1] - sh_price) / sh_price * 100, 2)
+
+                                if max_gain >= 3:
+                                    followup = f"✅ Real breakout (+{max_gain}% within 10d)"
+                                    tag = "real"
+                                elif max_gain >= 1:
+                                    followup = f"⚠️ Weak follow-through (+{max_gain}% max)"
+                                    tag = "weak"
+                                else:
+                                    followup = f"❌ False breakout ({min_draw}% to {max_gain}%)"
+                                    tag = "false"
+                            else:
+                                followup = "⏳ Too recent"
+                                tag = "recent"
 
                             signals.append({
-                                "Signal Date": df_s.index[-1].strftime("%d %b '%y"),
-                                "Resistance":  f"₹{sh_price:,}",
-                                "Set On":      sh_date.strftime("%d %b '%y"),
-                                "Pullback":    f"{pb}%",
-                                "Entry":       f"₹{round(close_now,2):,}",
-                                "Exit Day":    exit_day or "—",
-                                "Outcome":     outcome,
+                                "Breakout Date": df_s.index[-1].strftime("%d %b '%y"),
+                                "Broke Above":   f"₹{sh_price:,}",
+                                "Resistance Set": sh_date.strftime("%d %b '%y"),
+                                "Pullback %":    f"{pb}%",
+                                "Entry Close":   f"₹{round(close_now,2):,}",
+                                "What Happened": followup,
+                                "_tag":          tag,
                             })
                             break
 
-                if signals:
-                    df_sig = pd.DataFrame(signals)
-                    st.dataframe(df_sig, use_container_width=True, hide_index=True,
-                                 height=min(400, 40 * len(signals) + 50))
+                # --- SUMMARY OF LOGIC QUALITY ---
+                total_signals = len(signals)
+                real    = sum(1 for s in signals if s["_tag"] == "real")
+                weak    = sum(1 for s in signals if s["_tag"] == "weak")
+                false   = sum(1 for s in signals if s["_tag"] == "false")
+
+                accuracy = round(real / total_signals * 100, 1) if total_signals else 0
+                if accuracy >= 70:
+                    verdict, vc = "LOGIC IS SOLID", "#4ade80"
+                elif accuracy >= 50:
+                    verdict, vc = "LOGIC IS DECENT", "#fbbf24"
+                elif total_signals == 0:
+                    verdict, vc = "NO BREAKOUTS IN 2Y", "#64748b"
                 else:
-                    st.info("No breakout signals found for this stock in the last 2 years.")
+                    verdict, vc = "LOGIC NEEDS WORK", "#f87171"
 
-                # --- PERFORMANCE SUMMARY ---
-                wins    = sum(1 for s in signals if "WIN"  in s["Outcome"])
-                losses  = sum(1 for s in signals if "LOSS" in s["Outcome"])
-                opens   = sum(1 for s in signals if "OPEN" in s["Outcome"])
-                total   = len(signals)
-                wr      = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
-
-                if wr >= 60:
-                    verdict_text, vc = "STRONG", "#4ade80"
-                elif wr >= 45:
-                    verdict_text, vc = "MODERATE", "#fbbf24"
-                elif total == 0:
-                    verdict_text, vc = "NO SIGNALS", "#64748b"
-                else:
-                    verdict_text, vc = "WEAK", "#f87171"
-
-                st.markdown('<div class="sec-head">Step 3 — Performance Summary</div>',
-                            unsafe_allow_html=True)
+                st.markdown('<div class="sec-head">Signal Accuracy</div>', unsafe_allow_html=True)
                 st.markdown(f"""
                 <div class="kpi-row">
-                    <div class="kpi"><div class="kpi-val" style="color:#60a5fa">{total}</div>
-                        <div class="kpi-lbl">Total Signals</div></div>
-                    <div class="kpi"><div class="kpi-val" style="color:#4ade80">{wins}</div>
-                        <div class="kpi-lbl">Wins</div></div>
-                    <div class="kpi"><div class="kpi-val" style="color:#f87171">{losses}</div>
-                        <div class="kpi-lbl">Losses</div></div>
-                    <div class="kpi"><div class="kpi-val" style="color:#fbbf24">{opens}</div>
-                        <div class="kpi-lbl">Open</div></div>
-                    <div class="kpi"><div class="kpi-val" style="color:{vc}">{wr}%</div>
-                        <div class="kpi-lbl">Win Rate · {verdict_text}</div></div>
+                    <div class="kpi"><div class="kpi-val" style="color:#60a5fa">{total_signals}</div>
+                        <div class="kpi-lbl">Breakouts Detected</div></div>
+                    <div class="kpi"><div class="kpi-val" style="color:#4ade80">{real}</div>
+                        <div class="kpi-lbl">Real (followed through)</div></div>
+                    <div class="kpi"><div class="kpi-val" style="color:#fbbf24">{weak}</div>
+                        <div class="kpi-lbl">Weak follow-through</div></div>
+                    <div class="kpi"><div class="kpi-val" style="color:#f87171">{false}</div>
+                        <div class="kpi-lbl">False breakouts</div></div>
+                    <div class="kpi"><div class="kpi-val" style="color:{vc}">{accuracy}%</div>
+                        <div class="kpi-lbl">{verdict}</div></div>
                 </div>
                 """, unsafe_allow_html=True)
 
+                # --- DETAILED SIGNALS TABLE ---
+                st.markdown('<div class="sec-head">Every Breakout the Screener Would Have Caught</div>',
+                            unsafe_allow_html=True)
+                if signals:
+                    for s in signals:
+                        s.pop("_tag", None)
+                    df_sig = pd.DataFrame(signals)
+                    st.dataframe(df_sig, use_container_width=True, hide_index=True,
+                                 height=min(500, 42 * len(signals) + 45))
+                else:
+                    st.info("No breakouts detected. This stock had no clean swing setups in 2Y.")
+
+                # --- CHART WITH SIGNALS PLOTTED ---
+                if signals:
+                    st.markdown('<div class="sec-head">Visual Check — Breakouts on Chart</div>',
+                                unsafe_allow_html=True)
+                    fig = make_subplots(rows=1, cols=1)
+                    fig.add_trace(go.Candlestick(
+                        x=df.index, open=df['Open'], high=df['High'],
+                        low=df['Low'], close=df['Close'],
+                        increasing_line_color='#4ade80', decreasing_line_color='#f87171',
+                        increasing_fillcolor='#4ade80', decreasing_fillcolor='#f87171',
+                        name="Price", line_width=1,
+                    ))
+                    # Plot breakout points as markers
+                    bo_dates = []
+                    bo_prices= []
+                    bo_colors= []
+                    for s in signals:
+                        try:
+                            dt = datetime.strptime(s["Breakout Date"], "%d %b '%y")
+                            bo_dates.append(dt)
+                            bo_prices.append(float(s["Broke Above"].replace("₹","").replace(",","")))
+                            if "Real" in s["What Happened"]:
+                                bo_colors.append('#4ade80')
+                            elif "Weak" in s["What Happened"]:
+                                bo_colors.append('#fbbf24')
+                            else:
+                                bo_colors.append('#f87171')
+                        except:
+                            continue
+                    if bo_dates:
+                        fig.add_trace(go.Scatter(
+                            x=bo_dates, y=bo_prices, mode='markers',
+                            marker=dict(symbol='star', size=14, color=bo_colors,
+                                        line=dict(color='white', width=1)),
+                            name="Breakout signals",
+                        ))
+                    fig.update_layout(
+                        height=480, plot_bgcolor='#0a0f1e', paper_bgcolor='#0d1424',
+                        font=dict(family='IBM Plex Mono', color='#4b5e7e', size=10),
+                        xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10),
+                        showlegend=False,
+                    )
+                    fig.update_xaxes(gridcolor='#111827', zeroline=False)
+                    fig.update_yaxes(gridcolor='#111827', zeroline=False)
+                    st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    st.markdown("""
+                    <div style='font-size:0.72rem;color:#4b5e7e;margin-top:8px;line-height:1.7'>
+                        ⭐ Green stars = real breakouts (price ran +3% within 10 days)<br>
+                        ⭐ Yellow stars = weak follow-through<br>
+                        ⭐ Red stars = false breakouts (failed within 10 days)
+                    </div>""", unsafe_allow_html=True)
+
             except Exception as e:
-                st.error(f"Backtest failed: {e}")
+                st.error(f"Validation failed: {e}")
 
 st.markdown("""
 <div style='text-align:center;margin-top:48px;padding-top:18px;border-top:1px solid #0d1424;
